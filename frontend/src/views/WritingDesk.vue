@@ -105,9 +105,9 @@
     
     <!-- 任务进度模态框 -->
     <TaskProgressModal
-      v-if="showTaskProgress"
+      :show="showTaskProgress"
       :progress="taskProgress"
-      :message="taskMessage"
+      :progressMessage="taskMessage"
       :status="taskProgress === 100 ? 'completed' : 'processing'"
     />
   </div>

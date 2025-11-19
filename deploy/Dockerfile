@@ -19,8 +19,8 @@ RUN npm ci --prefer-offline --no-audit
 # 复制前端源码
 COPY frontend/ ./
 
-# 构建前端（跳过类型检查以加快构建速度）
-RUN npm run build-only
+# 构建前端
+RUN npm run build
 
 # ============================================
 # 第二阶段：构建最终镜像（后端 + nginx）
