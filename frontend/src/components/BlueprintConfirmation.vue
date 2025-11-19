@@ -129,6 +129,7 @@ import { ref, computed, onUnmounted, inject } from 'vue'
 import { marked } from 'marked'
 import { useNovelStore } from '@/stores/novel'
 import { globalAlert } from '@/composables/useAlert'
+import { useTaskPolling } from '@/composables/useTaskPolling'
 
 // 配置 marked
 marked.setOptions({
@@ -150,11 +151,6 @@ const emit = defineEmits<{
 const novelStore = useNovelStore()
 const isGenerating = ref(false)
 const progress = ref(0)
-const timeElapsed = ref(0)
-const maxTime = 180 // 180秒超时
-
-let progressTimer: NodeJS.Timeout | null = null
-let timeoutTimer: NodeJS.Timeout | null = null
 
 // 渲染 Markdown
 const renderedAiMessage = computed(() => {
@@ -180,86 +176,63 @@ const loadingText = computed(() => {
   return messages[Math.min(index, messages.length - 1)]
 })
 
-// 剩余时间计算
-const timeRemaining = computed(() => {
-  return Math.max(0, maxTime - timeElapsed.value)
-})
+
 
 const generateBlueprint = async () => {
   isGenerating.value = true
   progress.value = 0
-  timeElapsed.value = 0
-
-  // 启动进度条动画
-  progressTimer = setInterval(() => {
-    timeElapsed.value += 0.1
-
-    // 非线性进度增长，前面快后面慢
-    const normalizedTime = timeElapsed.value / maxTime
-    if (normalizedTime < 0.7) {
-      // 前70%时间内进度到80%
-      progress.value = Math.min(80, (normalizedTime / 0.7) * 80)
-    } else {
-      // 后30%时间内从80%到95%
-      const remainingProgress = (normalizedTime - 0.7) / 0.3
-      progress.value = Math.min(95, 80 + remainingProgress * 15)
-    }
-  }, 100)
-
-  // 60秒超时
-  timeoutTimer = setTimeout(() => {
-    clearTimers()
-    isGenerating.value = false
-    globalAlert.showError('生成超时，请稍后重试。如果问题持续，请检查网络连接。', '生成超时')
-  }, maxTime * 1000)
 
   try {
-    // 直接调用store中的API
+    // 调用API获取task_id
     console.log('开始调用generateBlueprint API...')
-    const response = await novelStore.generateBlueprint()
-    console.log('API调用成功，收到响应:', response)
+    const taskResponse = await novelStore.generateBlueprint()
+    console.log('API调用成功，收到响应:', taskResponse)
 
-    // API成功后，快速完成进度条到100%
-    if (progressTimer) {
-      clearInterval(progressTimer)
-      progressTimer = null
-    }
+    // 使用useTaskPolling轮询任务状态
+    const { startPolling, stopPolling } = useTaskPolling({
+      taskId: taskResponse.task_id,
+      interval: 3000, // 每3秒轮询一次
+      maxAttempts: 400, // 最多轮询400次（20分钟）
+      onProgress: (taskProgress, message) => {
+        // 更新进度条，使用任务实际进度
+        progress.value = taskProgress
+        console.log(`任务进度: ${taskProgress}% - ${message}`)
+      },
+      onComplete: async (result) => {
+        stopPolling()
+        
+        // 动画到100%并显示完成状态
+        progress.value = 100
+        
+        // 等待一下让用户看到100%完成状态
+        await new Promise(resolve => setTimeout(resolve, 800))
+        
+        isGenerating.value = false
+        
+        // 处理蓝图生成结果
+        if (result) {
+          console.log('蓝图生成完成，结果:', result)
+          emit('blueprintGenerated', result)
+        } else {
+          globalAlert.showError('抱歉，生成大纲失败，未能获取到最终数据。', '生成失败')
+        }
+      },
+      onError: (error) => {
+        stopPolling()
+        isGenerating.value = false
+        globalAlert.showError(`生成蓝图失败: ${error}`, '生成失败')
+      }
+    })
 
-    // 动画到100%并显示完成状态
-    progress.value = 100
-
-    // 等待一下让用户看到100%完成状态，然后再切换界面
-    await new Promise(resolve => setTimeout(resolve, 800))
-
-    // 清理并重置状态
-    clearTimers()
-    isGenerating.value = false
-
-    // 通知父组件生成完成
-    emit('blueprintGenerated', response)
-
+    startPolling()
   } catch (error) {
     console.error('生成蓝图失败:', error)
-    clearTimers()
     isGenerating.value = false
     globalAlert.showError(`生成蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
   }
 }
 
-const clearTimers = () => {
-  if (progressTimer) {
-    clearInterval(progressTimer)
-    progressTimer = null
-  }
-  if (timeoutTimer) {
-    clearTimeout(timeoutTimer)
-    timeoutTimer = null
-  }
-}
 
-onUnmounted(() => {
-  clearTimers()
-})
 </script>
 
 <style scoped>

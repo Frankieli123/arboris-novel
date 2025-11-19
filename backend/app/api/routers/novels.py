@@ -18,6 +18,7 @@ from ...schemas.novel import (
     NovelSectionResponse,
     NovelSectionType,
 )
+from ...schemas.task import TaskResponse
 from ...schemas.user import UserInDB
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
@@ -171,12 +172,12 @@ async def converse_with_concept(
     }
 
 
-@router.post("/{project_id}/blueprint/generate", response_model=Dict[str, str])
+@router.post("/{project_id}/blueprint/generate", response_model=TaskResponse)
 async def generate_blueprint(
     project_id: str,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
-) -> Dict[str, str]:
+) -> TaskResponse:
     """根据完整对话生成可执行的小说蓝图。现在返回异步任务ID。"""
     from ...services.task_service import TaskService
     
@@ -207,11 +208,11 @@ async def generate_blueprint(
         project_id,
     )
     
-    return {
-        "task_id": task.id,
-        "status": task.status,
-        "message": "任务已创建，请使用任务ID查询进度"
-    }
+    return TaskResponse(
+        task_id=task.id,
+        status=task.status,
+        created_at=task.created_at
+    )
 
 
 @router.post("/{project_id}/blueprint/save", response_model=NovelProjectSchema)

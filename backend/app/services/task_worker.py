@@ -403,6 +403,7 @@ class TaskWorker:
                                 progress_message=f"任务失败，将在 {delay} 秒后重试（第 {retry_count} 次重试）",
                                 error_message=str(e)
                             )
+                            await session.commit()
                         
                         await retry_on_db_error(update_to_pending, max_retries=5, base_delay=1.0)
                         

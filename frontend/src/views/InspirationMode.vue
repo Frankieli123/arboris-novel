@@ -110,14 +110,6 @@
         @regenerate="handleRegenerateBlueprint"
       />
     </div>
-
-    <!-- 任务进度模态框 -->
-    <TaskProgressModal
-      :show="showTaskProgress"
-      :progress="taskProgress"
-      :progressMessage="taskMessage"
-      :status="taskProgress === 100 ? 'completed' : 'processing'"
-    />
   </div>
 </template>
 
@@ -131,7 +123,6 @@ import ConversationInput from '@/components/ConversationInput.vue'
 import BlueprintConfirmation from '@/components/BlueprintConfirmation.vue'
 import BlueprintDisplay from '@/components/BlueprintDisplay.vue'
 import InspirationLoading from '@/components/InspirationLoading.vue'
-import TaskProgressModal from '@/components/TaskProgressModal.vue'
 import { globalAlert } from '@/composables/useAlert'
 import { useTaskPolling } from '@/composables/useTaskPolling'
 
@@ -155,12 +146,6 @@ const completedBlueprint = ref<Blueprint | null>(null)
 const confirmationMessage = ref('')
 const blueprintMessage = ref('')
 const chatArea = ref<HTMLElement>()
-
-// Task polling state
-const showTaskProgress = ref(false)
-const taskProgress = ref(0)
-const taskMessage = ref('')
-const currentTaskType = ref<'conversation' | 'blueprint' | null>(null)
 
 const goBack = () => {
   router.push('/')
@@ -247,15 +232,19 @@ const restoreConversation = async (projectId: string) => {
 
       const lastAssistantMsgStr = project.conversation_history.filter(m => m.role === 'assistant').pop()?.content
       if (lastAssistantMsgStr) {
-        const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
-        
-        if (lastAssistantMsg.is_complete) {
-          // 如果对话已完成，直接显示蓝图确认界面
-          confirmationMessage.value = lastAssistantMsg.ai_message
-          showBlueprintConfirmation.value = true
-        } else {
-          // 否则，恢复对话
-          currentUIControl.value = lastAssistantMsg.ui_control
+        try {
+          const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
+          
+          if (lastAssistantMsg.is_complete) {
+            // 如果对话已完成，直接显示蓝图确认界面
+            confirmationMessage.value = lastAssistantMsg.ai_message
+            showBlueprintConfirmation.value = true
+          } else {
+            // 否则，恢复对话
+            currentUIControl.value = lastAssistantMsg.ui_control
+          }
+        } catch (e) {
+          console.error('解析最后一条助手消息的 JSON 失败:', e)
         }
       }
       // 计算当前轮次
@@ -282,23 +271,12 @@ const handleUserInput = async (userInput: any) => {
 
     // 调用API获取task_id
     const taskResponse = await novelStore.sendConversation(userInput)
-    
-    // 显示任务进度模态框
-    currentTaskType.value = 'conversation'
-    showTaskProgress.value = true
-    taskProgress.value = 0
-    taskMessage.value = '正在处理对话...'
 
     // 使用useTaskPolling轮询任务状态
     const { startPolling, stopPolling } = useTaskPolling({
       taskId: taskResponse.task_id,
-      onProgress: (progress, message) => {
-        taskProgress.value = progress
-        taskMessage.value = message || '正在处理对话...'
-      },
       onComplete: async (result) => {
         stopPolling()
-        showTaskProgress.value = false
         
         // 首次加载完成后，关闭加载动画
         if (isInitialLoading.value) {
@@ -336,7 +314,6 @@ const handleUserInput = async (userInput: any) => {
       },
       onError: (error) => {
         stopPolling()
-        showTaskProgress.value = false
         
         // 确保在出错时也停止初始加载状态
         if (isInitialLoading.value) {
@@ -351,7 +328,6 @@ const handleUserInput = async (userInput: any) => {
     startPolling()
   } catch (error) {
     console.error('对话失败:', error)
-    showTaskProgress.value = false
     
     // 确保在出错时也停止初始加载状态
     if (isInitialLoading.value) {
@@ -367,23 +343,12 @@ const handleGenerateBlueprint = async () => {
   try {
     // 调用API获取task_id
     const taskResponse = await novelStore.generateBlueprint()
-    
-    // 显示任务进度模态框
-    currentTaskType.value = 'blueprint'
-    showTaskProgress.value = true
-    taskProgress.value = 0
-    taskMessage.value = '正在生成蓝图...'
 
     // 使用useTaskPolling轮询任务状态
     const { startPolling, stopPolling } = useTaskPolling({
       taskId: taskResponse.task_id,
-      onProgress: (progress, message) => {
-        taskProgress.value = progress
-        taskMessage.value = message || '正在生成蓝图...'
-      },
       onComplete: async (result) => {
         stopPolling()
-        showTaskProgress.value = false
         
         // 处理蓝图生成结果
         if (result) {
@@ -392,7 +357,6 @@ const handleGenerateBlueprint = async () => {
       },
       onError: (error) => {
         stopPolling()
-        showTaskProgress.value = false
         globalAlert.showError(`生成蓝图失败: ${error}`, '生成失败')
       }
     })
@@ -400,7 +364,6 @@ const handleGenerateBlueprint = async () => {
     startPolling()
   } catch (error) {
     console.error('生成蓝图失败:', error)
-    showTaskProgress.value = false
     globalAlert.showError(`生成蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
   }
 }

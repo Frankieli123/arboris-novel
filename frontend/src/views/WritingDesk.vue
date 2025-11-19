@@ -102,14 +102,6 @@
       @close="showGenerateOutlineModal = false"
       @generate="handleGenerateOutline"
     />
-    
-    <!-- 任务进度模态框 -->
-    <TaskProgressModal
-      :show="showTaskProgress"
-      :progress="taskProgress"
-      :progressMessage="taskMessage"
-      :status="taskProgress === 100 ? 'completed' : 'processing'"
-    />
   </div>
 </template>
 
@@ -121,7 +113,6 @@ import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion
 import { globalAlert } from '@/composables/useAlert'
 import { useTaskPolling } from '@/composables/useTaskPolling'
 import Tooltip from '@/components/Tooltip.vue'
-import TaskProgressModal from '@/components/TaskProgressModal.vue'
 import WDHeader from '@/components/writing-desk/WDHeader.vue'
 import WDSidebar from '@/components/writing-desk/WDSidebar.vue'
 import WDWorkspace from '@/components/writing-desk/WDWorkspace.vue'
@@ -151,12 +142,6 @@ const showEditChapterModal = ref(false)
 const editingChapter = ref<ChapterOutline | null>(null)
 const isGeneratingOutline = ref(false)
 const showGenerateOutlineModal = ref(false)
-
-// 任务轮询状态
-const showTaskProgress = ref(false)
-const taskProgress = ref(0)
-const taskMessage = ref('')
-const currentTaskType = ref<'chapter' | 'evaluate' | 'outline' | null>(null)
 
 // 计算属性
 const project = computed(() => novelStore.currentProject)
@@ -413,23 +398,12 @@ const generateChapter = async (chapterNumber: number) => {
 
     // 调用API获取task_id
     const taskResponse = await novelStore.generateChapter(chapterNumber)
-    
-    // 显示任务进度模态框
-    currentTaskType.value = 'chapter'
-    showTaskProgress.value = true
-    taskProgress.value = 0
-    taskMessage.value = `正在生成第${chapterNumber}章...`
 
     // 使用useTaskPolling轮询任务状态
     const { startPolling, stopPolling } = useTaskPolling({
       taskId: taskResponse.task_id,
-      onProgress: (progress, message) => {
-        taskProgress.value = progress
-        taskMessage.value = message || `正在生成第${chapterNumber}章...`
-      },
       onComplete: async (result) => {
         stopPolling()
-        showTaskProgress.value = false
         generatingChapter.value = null
         
         // 重新加载章节数据
@@ -442,7 +416,6 @@ const generateChapter = async (chapterNumber: number) => {
       },
       onError: (error) => {
         stopPolling()
-        showTaskProgress.value = false
         generatingChapter.value = null
         
         // 错误状态的本地更新
@@ -460,7 +433,6 @@ const generateChapter = async (chapterNumber: number) => {
     startPolling()
   } catch (error) {
     console.error('生成章节失败:', error)
-    showTaskProgress.value = false
     generatingChapter.value = null
 
     // 错误状态的本地更新仍然是必要的，以立即反映UI
@@ -558,23 +530,12 @@ const evaluateChapter = async () => {
       
       // 调用API获取task_id
       const taskResponse = await novelStore.evaluateChapter(chapterNumber)
-      
-      // 显示任务进度模态框
-      currentTaskType.value = 'evaluate'
-      showTaskProgress.value = true
-      taskProgress.value = 0
-      taskMessage.value = `正在评估第${chapterNumber}章...`
 
       // 使用useTaskPolling轮询任务状态
       const { startPolling, stopPolling } = useTaskPolling({
         taskId: taskResponse.task_id,
-        onProgress: (progress, message) => {
-          taskProgress.value = progress
-          taskMessage.value = message || `正在评估第${chapterNumber}章...`
-        },
         onComplete: async (result) => {
           stopPolling()
-          showTaskProgress.value = false
           
           // 重新加载章节数据
           if (project.value) {
@@ -585,7 +546,6 @@ const evaluateChapter = async () => {
         },
         onError: (error) => {
           stopPolling()
-          showTaskProgress.value = false
           
           // 错误状态下恢复章节状态
           if (project.value?.chapters) {
@@ -602,7 +562,6 @@ const evaluateChapter = async () => {
       startPolling()
     } catch (error) {
       console.error('评审章节失败:', error)
-      showTaskProgress.value = false
       
       // 错误状态下恢复章节状态
       if (project.value?.chapters) {
@@ -663,23 +622,12 @@ const handleGenerateOutline = async (numChapters: number) => {
     
     // 调用API获取task_id
     const taskResponse = await novelStore.generateChapterOutline(startChapter, numChapters)
-    
-    // 显示任务进度模态框
-    currentTaskType.value = 'outline'
-    showTaskProgress.value = true
-    taskProgress.value = 0
-    taskMessage.value = '正在生成章节大纲...'
 
     // 使用useTaskPolling轮询任务状态
     const { startPolling, stopPolling } = useTaskPolling({
       taskId: taskResponse.task_id,
-      onProgress: (progress, message) => {
-        taskProgress.value = progress
-        taskMessage.value = message || '正在生成章节大纲...'
-      },
       onComplete: async (result) => {
         stopPolling()
-        showTaskProgress.value = false
         isGeneratingOutline.value = false
         
         // 重新加载项目数据
@@ -691,7 +639,6 @@ const handleGenerateOutline = async (numChapters: number) => {
       },
       onError: (error) => {
         stopPolling()
-        showTaskProgress.value = false
         isGeneratingOutline.value = false
         
         globalAlert.showError(`生成大纲失败: ${error}`, '生成失败')
@@ -701,7 +648,6 @@ const handleGenerateOutline = async (numChapters: number) => {
     startPolling()
   } catch (error) {
     console.error('生成大纲失败:', error)
-    showTaskProgress.value = false
     isGeneratingOutline.value = false
     globalAlert.showError(`生成大纲失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
   }
