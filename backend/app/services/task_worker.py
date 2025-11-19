@@ -470,6 +470,8 @@ class TaskWorker:
             return await self._execute_chapter_generate(task, session)
         elif task_type == "chapter_evaluate":
             return await self._execute_chapter_evaluate(task, session)
+        elif task_type == "chapter_select":
+            return await self._execute_chapter_select(task, session)
         elif task_type == "outline_generate":
             return await self._execute_outline_generate(task, session)
         else:
@@ -755,238 +757,249 @@ IMPORTANT: 你的回复必须是合法的 JSON 对象，并严格包含以下字
         chapter_number = input_data.get("chapter_number")
         writing_notes = input_data.get("writing_notes")
         user_id = task.user_id
-        
+
         if not project_id or chapter_number is None:
             raise ValueError("Missing required input data: project_id or chapter_number")
-        
-        # 更新进度
-        task_service = TaskService(session)
-        await task_service.update_task_status(
-            task_id=task.id,
-            status="processing",
-            progress=5,
-            progress_message="正在加载项目信息..."
-        )
-        await session.commit()
-        
-        novel_service = NovelService(session)
-        prompt_service = PromptService(session)
-        llm_service = LLMService(session)
-        
-        project = await novel_service.ensure_project_owner(project_id, user_id)
-        outline = await novel_service.get_outline(project_id, chapter_number)
-        if not outline:
-            raise ValueError("蓝图中未找到对应章节纲要")
-        
-        chapter = await novel_service.get_or_create_chapter(project_id, chapter_number)
-        chapter.real_summary = None
-        chapter.selected_version_id = None
-        chapter.status = "generating"
-        await session.commit()
-        
-        # 更新进度
-        await task_service.update_task_status(
-            task_id=task.id,
-            status="processing",
-            progress=10,
-            progress_message="正在准备章节上下文..."
-        )
-        await session.commit()
-        
-        # 准备上下文
-        outlines_map = {item.chapter_number: item for item in project.outlines}
-        completed_chapters = []
-        latest_prev_number = -1
-        previous_summary_text = ""
-        previous_tail_excerpt = ""
-        
-        for existing in project.chapters:
-            if existing.chapter_number >= chapter_number:
-                continue
-            if existing.selected_version is None or not existing.selected_version.content:
-                continue
-            if not existing.real_summary:
-                summary = await llm_service.get_summary(
-                    existing.selected_version.content,
-                    temperature=0.15,
-                    user_id=user_id,
-                    timeout=180.0,
-                )
-                existing.real_summary = remove_think_tags(summary)
-                await session.commit()
-            completed_chapters.append(
-                {
-                    "chapter_number": existing.chapter_number,
-                    "title": outlines_map.get(existing.chapter_number).title if outlines_map.get(existing.chapter_number) else f"第{existing.chapter_number}章",
-                    "summary": existing.real_summary,
-                }
-            )
-            if existing.chapter_number > latest_prev_number:
-                latest_prev_number = existing.chapter_number
-                previous_summary_text = existing.real_summary or ""
-                content = existing.selected_version.content or ""
-                stripped = content.strip()
-                previous_tail_excerpt = stripped[-500:] if len(stripped) > 500 else stripped
-        
-        # 更新进度
-        await task_service.update_task_status(
-            task_id=task.id,
-            status="processing",
-            progress=20,
-            progress_message="正在检索相关剧情..."
-        )
-        await session.commit()
-        
-        project_schema = await novel_service._serialize_project(project)
-        blueprint_dict = project_schema.blueprint.model_dump()
-        
-        if "relationships" in blueprint_dict and blueprint_dict["relationships"]:
-            for relation in blueprint_dict["relationships"]:
-                if "character_from" in relation:
-                    relation["from"] = relation.pop("character_from")
-                if "character_to" in relation:
-                    relation["to"] = relation.pop("character_to")
-        
-        banned_blueprint_keys = {
-            "chapter_outline",
-            "chapter_summaries",
-            "chapter_details",
-            "chapter_dialogues",
-            "chapter_events",
-            "conversation_history",
-            "character_timelines",
-        }
-        for key in banned_blueprint_keys:
-            if key in blueprint_dict:
-                blueprint_dict.pop(key, None)
-        
-        writer_prompt = await prompt_service.get_prompt("writing")
-        if not writer_prompt:
-            raise ValueError("缺少写作提示词，请联系管理员配置 'writing' 提示词")
-        
-        # 初始化向量检索
-        vector_store: Optional[VectorStoreService]
-        if not settings.vector_store_enabled:
-            vector_store = None
-        else:
-            try:
-                vector_store = VectorStoreService()
-            except RuntimeError:
-                vector_store = None
-        
-        context_service = ChapterContextService(llm_service=llm_service, vector_store=vector_store)
-        
-        outline_title = outline.title or f"第{outline.chapter_number}章"
-        outline_summary = outline.summary or "暂无摘要"
-        query_parts = [outline_title, outline_summary]
-        if writing_notes:
-            query_parts.append(writing_notes)
-        rag_query = "\n".join(part for part in query_parts if part)
-        rag_context = await context_service.retrieve_for_generation(
-            project_id=project_id,
-            query_text=rag_query or outline.title or outline.summary or "",
-            user_id=user_id,
-        )
-        
-        # 准备提示词
-        blueprint_text = json.dumps(blueprint_dict, ensure_ascii=False, indent=2)
-        previous_summary_text = previous_summary_text or "暂无可用摘要"
-        previous_tail_excerpt = previous_tail_excerpt or "暂无上一章结尾内容"
-        rag_chunks_text = "\n\n".join(rag_context.chunk_texts()) if rag_context and rag_context.chunks else "未检索到章节片段"
-        rag_summaries_text = "\n".join(rag_context.summary_lines()) if rag_context and rag_context.summaries else "未检索到章节摘要"
-        writing_notes_text = writing_notes or "无额外写作指令"
-        
-        prompt_sections = [
-            ("[世界蓝图](JSON)", blueprint_text),
-            ("[上一章摘要]", previous_summary_text),
-            ("[上一章结尾]", previous_tail_excerpt),
-            ("[检索到的剧情上下文](Markdown)", rag_chunks_text),
-            ("[检索到的章节摘要]", rag_summaries_text),
-            (
-                "[当前章节目标]",
-                f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes_text}",
-            ),
-        ]
-        prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
-        
-        # 获取版本数量
-        repo = SystemConfigRepository(session)
-        record = await repo.get_by_key("writer.chapter_versions")
-        version_count = 3
-        if record:
-            try:
-                value = int(record.value)
-                if value > 0:
-                    version_count = value
-            except (TypeError, ValueError):
-                pass
-        if version_count <= 0:
-            env_value = os.getenv("WRITER_CHAPTER_VERSION_COUNT")
-            if env_value:
-                try:
-                    value = int(env_value)
-                    if value > 0:
-                        version_count = value
-                except ValueError:
-                    pass
-        
-        # 生成多个版本
-        raw_versions = []
-        for idx in range(version_count):
-            progress = 30 + int((idx / version_count) * 50)
+
+        chapter = None
+        success = False
+
+        try:
+            # 更新进度
+            task_service = TaskService(session)
             await task_service.update_task_status(
                 task_id=task.id,
                 status="processing",
-                progress=progress,
-                progress_message=f"正在生成第 {idx + 1}/{version_count} 个版本..."
+                progress=5,
+                progress_message="正在加载项目信息..."
             )
             await session.commit()
-            
-            response = await llm_service.get_llm_response(
-                system_prompt=writer_prompt,
-                conversation_history=[{"role": "user", "content": prompt_input}],
-                temperature=0.9,
-                user_id=user_id,
-                timeout=1200.0,
+
+            novel_service = NovelService(session)
+            prompt_service = PromptService(session)
+            llm_service = LLMService(session)
+
+            project = await novel_service.ensure_project_owner(project_id, user_id)
+            outline = await novel_service.get_outline(project_id, chapter_number)
+            if not outline:
+                raise ValueError("蓝图中未找到对应章节纲要")
+
+            chapter = await novel_service.get_or_create_chapter(project_id, chapter_number)
+            chapter.real_summary = None
+            chapter.selected_version_id = None
+            chapter.status = "generating"
+            await session.commit()
+
+            # 更新进度
+            await task_service.update_task_status(
+                task_id=task.id,
+                status="processing",
+                progress=10,
+                progress_message="正在准备章节上下文..."
             )
-            cleaned = remove_think_tags(response)
-            normalized = unwrap_markdown_json(cleaned)
-            try:
-                raw_versions.append(json.loads(normalized))
-            except json.JSONDecodeError:
-                raw_versions.append({"content": normalized})
-        
-        # 更新进度
-        await task_service.update_task_status(
-            task_id=task.id,
-            status="processing",
-            progress=85,
-            progress_message="正在保存章节版本..."
-        )
-        await session.commit()
-        
-        contents: List[str] = []
-        metadata: List[Dict] = []
-        for variant in raw_versions:
-            if isinstance(variant, dict):
-                if "content" in variant and isinstance(variant["content"], str):
-                    contents.append(variant["content"])
-                elif "chapter_content" in variant:
-                    contents.append(str(variant["chapter_content"]))
-                else:
-                    contents.append(json.dumps(variant, ensure_ascii=False))
-                metadata.append(variant)
+            await session.commit()
+
+            # 准备上下文
+            outlines_map = {item.chapter_number: item for item in project.outlines}
+            completed_chapters = []
+            latest_prev_number = -1
+            previous_summary_text = ""
+            previous_tail_excerpt = ""
+
+            for existing in project.chapters:
+                if existing.chapter_number >= chapter_number:
+                    continue
+                if existing.selected_version is None or not existing.selected_version.content:
+                    continue
+                if not existing.real_summary:
+                    summary = await llm_service.get_summary(
+                        existing.selected_version.content,
+                        temperature=0.15,
+                        user_id=user_id,
+                        timeout=180.0,
+                    )
+                    existing.real_summary = remove_think_tags(summary)
+                    await session.commit()
+                completed_chapters.append(
+                    {
+                        "chapter_number": existing.chapter_number,
+                        "title": outlines_map.get(existing.chapter_number).title if outlines_map.get(existing.chapter_number) else f"第{existing.chapter_number}章",
+                        "summary": existing.real_summary,
+                    }
+                )
+                if existing.chapter_number > latest_prev_number:
+                    latest_prev_number = existing.chapter_number
+                    previous_summary_text = existing.real_summary or ""
+                    content = existing.selected_version.content or ""
+                    stripped = content.strip()
+                    previous_tail_excerpt = stripped[-500:] if len(stripped) > 500 else stripped
+
+            # 更新进度
+            await task_service.update_task_status(
+                task_id=task.id,
+                status="processing",
+                progress=20,
+                progress_message="正在检索相关剧情..."
+            )
+            await session.commit()
+
+            project_schema = await novel_service._serialize_project(project)
+            blueprint_dict = project_schema.blueprint.model_dump()
+
+            if "relationships" in blueprint_dict and blueprint_dict["relationships"]:
+                for relation in blueprint_dict["relationships"]:
+                    if "character_from" in relation:
+                        relation["from"] = relation.pop("character_from")
+                    if "character_to" in relation:
+                        relation["to"] = relation.pop("character_to")
+
+            banned_blueprint_keys = {
+                "chapter_outline",
+                "chapter_summaries",
+                "chapter_details",
+                "chapter_dialogues",
+                "chapter_events",
+                "conversation_history",
+                "character_timelines",
+            }
+            for key in banned_blueprint_keys:
+                if key in blueprint_dict:
+                    blueprint_dict.pop(key, None)
+
+            writer_prompt = await prompt_service.get_prompt("writing")
+            if not writer_prompt:
+                raise ValueError("缺少写作提示词，请联系管理员配置 'writing' 提示词")
+
+            # 初始化向量检索
+            vector_store: Optional[VectorStoreService]
+            if not settings.vector_store_enabled:
+                vector_store = None
             else:
-                contents.append(str(variant))
-                metadata.append({"raw": variant})
-        
-        await novel_service.replace_chapter_versions(chapter, contents, metadata)
-        
-        return {
-            "chapter_number": chapter_number,
-            "versions_count": len(contents),
-            "status": "success"
-        }
+                try:
+                    vector_store = VectorStoreService()
+                except RuntimeError:
+                    vector_store = None
+
+            context_service = ChapterContextService(llm_service=llm_service, vector_store=vector_store)
+
+            outline_title = outline.title or f"第{outline.chapter_number}章"
+            outline_summary = outline.summary or "暂无摘要"
+            query_parts = [outline_title, outline_summary]
+            if writing_notes:
+                query_parts.append(writing_notes)
+            rag_query = "\n".join(part for part in query_parts if part)
+            rag_context = await context_service.retrieve_for_generation(
+                project_id=project_id,
+                query_text=rag_query or outline.title or outline.summary or "",
+                user_id=user_id,
+            )
+
+            # 准备提示词
+            blueprint_text = json.dumps(blueprint_dict, ensure_ascii=False, indent=2)
+            previous_summary_text = previous_summary_text or "暂无可用摘要"
+            previous_tail_excerpt = previous_tail_excerpt or "暂无上一章结尾内容"
+            rag_chunks_text = "\n\n".join(rag_context.chunk_texts()) if rag_context and rag_context.chunks else "未检索到章节片段"
+            rag_summaries_text = "\n".join(rag_context.summary_lines()) if rag_context and rag_context.summaries else "未检索到章节摘要"
+            writing_notes_text = writing_notes or "无额外写作指令"
+
+            prompt_sections = [
+                ("[世界蓝图](JSON)", blueprint_text),
+                ("[上一章摘要]", previous_summary_text),
+                ("[上一章结尾]", previous_tail_excerpt),
+                ("[检索到的剧情上下文](Markdown)", rag_chunks_text),
+                ("[检索到的章节摘要]", rag_summaries_text),
+                (
+                    "[当前章节目标]",
+                    f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes_text}",
+                ),
+            ]
+            prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
+
+            # 获取版本数量
+            repo = SystemConfigRepository(session)
+            record = await repo.get_by_key("writer.chapter_versions")
+            version_count = 3
+            if record:
+                try:
+                    value = int(record.value)
+                    if value > 0:
+                        version_count = value
+                except (TypeError, ValueError):
+                    pass
+            if version_count <= 0:
+                env_value = os.getenv("WRITER_CHAPTER_VERSION_COUNT")
+                if env_value:
+                    try:
+                        value = int(env_value)
+                        if value > 0:
+                            version_count = value
+                    except ValueError:
+                        pass
+
+            # 生成多个版本
+            raw_versions = []
+            for idx in range(version_count):
+                progress = 30 + int((idx / version_count) * 50)
+                await task_service.update_task_status(
+                    task_id=task.id,
+                    status="processing",
+                    progress=progress,
+                    progress_message=f"正在生成第 {idx + 1}/{version_count} 个版本..."
+                )
+                await session.commit()
+
+                response = await llm_service.get_llm_response(
+                    system_prompt=writer_prompt,
+                    conversation_history=[{"role": "user", "content": prompt_input}],
+                    temperature=0.9,
+                    user_id=user_id,
+                    timeout=1200.0,
+                )
+                cleaned = remove_think_tags(response)
+                normalized = unwrap_markdown_json(cleaned)
+                try:
+                    raw_versions.append(json.loads(normalized))
+                except json.JSONDecodeError:
+                    raw_versions.append({"content": normalized})
+
+            # 更新进度
+            await task_service.update_task_status(
+                task_id=task.id,
+                status="processing",
+                progress=85,
+                progress_message="正在保存章节版本..."
+            )
+            await session.commit()
+
+            contents: List[str] = []
+            metadata: List[Dict] = []
+            for variant in raw_versions:
+                if isinstance(variant, dict):
+                    if "content" in variant and isinstance(variant["content"], str):
+                        contents.append(variant["content"])
+                    elif "chapter_content" in variant:
+                        contents.append(str(variant["chapter_content"]))
+                    else:
+                        contents.append(json.dumps(variant, ensure_ascii=False))
+                    metadata.append(variant)
+                else:
+                    contents.append(str(variant))
+                    metadata.append({"raw": variant})
+
+            await novel_service.replace_chapter_versions(chapter, contents, metadata)
+
+            success = True
+
+            return {
+                "chapter_number": chapter_number,
+                "versions_count": len(contents),
+                "status": "success"
+            }
+        finally:
+            # 如果章节生成流程中途失败，确保章节状态不会一直停留在 "generating"
+            if not success and chapter is not None:
+                chapter.status = "failed"
+                await session.commit()
 
     async def _execute_chapter_evaluate(self, task: AsyncTask, session: AsyncSession) -> dict:
         """
@@ -1095,6 +1108,123 @@ IMPORTANT: 你的回复必须是合法的 JSON 对象，并严格包含以下字
         return {
             "chapter_number": chapter_number,
             "evaluation": evaluation_clean,
+            "status": "success"
+        }
+
+    async def _execute_chapter_select(self, task: AsyncTask, session: AsyncSession) -> dict:
+        """
+        执行章节选择任务（生成摘要并同步向量库）
+        
+        Args:
+            task: 任务对象
+            session: 数据库会话
+            
+        Returns:
+            章节选择结果
+        """
+        from typing import Optional
+        from ..services.novel_service import NovelService
+        from ..services.llm_service import LLMService
+        from ..services.vector_store_service import VectorStoreService
+        from ..services.chapter_ingest_service import ChapterIngestionService
+        from ..utils.json_utils import remove_think_tags
+        from ..core.config import settings
+        
+        input_data = task.input_data
+        project_id = input_data.get("project_id")
+        chapter_number = input_data.get("chapter_number")
+        version_index = input_data.get("version_index")
+        user_id = task.user_id
+        
+        if not project_id or chapter_number is None or version_index is None:
+            raise ValueError("Missing required input data: project_id, chapter_number or version_index")
+        
+        # 更新进度
+        task_service = TaskService(session)
+        await task_service.update_task_status(
+            task_id=task.id,
+            status="processing",
+            progress=10,
+            progress_message="正在加载章节信息..."
+        )
+        await session.commit()
+        
+        novel_service = NovelService(session)
+        llm_service = LLMService(session)
+        
+        project = await novel_service.ensure_project_owner(project_id, user_id)
+        chapter = next((ch for ch in project.chapters if ch.chapter_number == chapter_number), None)
+        if not chapter:
+            raise ValueError("章节不存在")
+        
+        # 获取选中的版本
+        selected = chapter.selected_version
+        if not selected or not selected.content:
+            raise ValueError("未找到选中的版本内容")
+        
+        # 更新进度
+        await task_service.update_task_status(
+            task_id=task.id,
+            status="processing",
+            progress=30,
+            progress_message="正在生成章节摘要..."
+        )
+        await session.commit()
+        
+        # 生成摘要
+        summary = await llm_service.get_summary(
+            selected.content,
+            temperature=0.15,
+            user_id=user_id,
+            timeout=300.0,
+        )
+        chapter.real_summary = remove_think_tags(summary)
+        await session.commit()
+        
+        # 更新进度
+        await task_service.update_task_status(
+            task_id=task.id,
+            status="processing",
+            progress=60,
+            progress_message="正在同步向量库..."
+        )
+        await session.commit()
+        
+        # 同步向量库
+        vector_store: Optional[VectorStoreService]
+        if not settings.vector_store_enabled:
+            vector_store = None
+        else:
+            try:
+                vector_store = VectorStoreService()
+            except RuntimeError as exc:
+                logger.warning("向量库初始化失败，跳过章节向量同步: %s", exc)
+                vector_store = None
+        
+        if vector_store:
+            ingestion_service = ChapterIngestionService(llm_service=llm_service, vector_store=vector_store)
+            outline = next((item for item in project.outlines if item.chapter_number == chapter.chapter_number), None)
+            chapter_title = outline.title if outline and outline.title else f"第{chapter.chapter_number}章"
+            await ingestion_service.ingest_chapter(
+                project_id=project_id,
+                chapter_number=chapter.chapter_number,
+                title=chapter_title,
+                content=selected.content,
+                summary=chapter.real_summary,
+                user_id=user_id,
+            )
+            logger.info(
+                "项目 %s 第 %s 章已同步至向量库",
+                project_id,
+                chapter.chapter_number,
+            )
+        
+        # 返回更新后的项目数据
+        project_schema = await novel_service.get_project_schema(project_id, user_id)
+        
+        return {
+            "project": project_schema.model_dump(),
+            "chapter_number": chapter_number,
             "status": "success"
         }
 

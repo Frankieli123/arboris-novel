@@ -174,19 +174,18 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
-  async function selectChapterVersion(chapterNumber: number, versionIndex: number) {
+  async function selectChapterVersion(chapterNumber: number, versionIndex: number): Promise<{ task_id: string; status: string; created_at: string }> {
     // 不设置全局 isLoading，让调用方处理局部加载状态
     error.value = null
     try {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
-      const updatedProject = await NovelAPI.selectChapterVersion(
+      return await NovelAPI.selectChapterVersion(
         currentProject.value.id,
         chapterNumber,
         versionIndex
       )
-      currentProject.value = updatedProject // 更新 store
     } catch (err) {
       error.value = err instanceof Error ? err.message : '选择章节版本失败'
       throw err

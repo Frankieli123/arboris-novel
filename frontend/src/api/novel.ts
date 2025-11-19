@@ -225,7 +225,7 @@ export class NovelAPI {
     projectId: string,
     chapterNumber: number,
     versionIndex: number
-  ): Promise<NovelProject> {
+  ): Promise<{ task_id: string; status: string; created_at: string }> {
     return request(`${WRITER_BASE}/${projectId}/chapters/select`, {
       method: 'POST',
       body: JSON.stringify({

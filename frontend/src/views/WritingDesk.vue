@@ -468,20 +468,49 @@ const selectVersion = async (versionIndex: number) => {
     }
 
     selectedVersionIndex.value = versionIndex
-    await novelStore.selectChapterVersion(selectedChapterNumber.value, versionIndex)
+    
+    // 调用API获取task_id
+    const taskResponse = await novelStore.selectChapterVersion(selectedChapterNumber.value, versionIndex)
 
-    // 状态更新将由 store 自动触发，本地无需手动更新
-    // 轮询机制会处理状态变更，成功后会自动隐藏选择器
-    // showVersionSelector.value = false
-    chapterGenerationResult.value = null
-    globalAlert.showSuccess('版本已确认', '操作成功')
+    // 使用useTaskPolling轮询任务状态
+    const { startPolling, stopPolling } = useTaskPolling({
+      taskId: taskResponse.task_id,
+      interval: 2000,
+      maxAttempts: 300, // 10分钟超时
+      onComplete: async (result) => {
+        stopPolling()
+        
+        // 更新项目数据
+        if (result && result.project) {
+          novelStore.currentProject = result.project
+        }
+        
+        chapterGenerationResult.value = null
+        globalAlert.showSuccess('版本已确认，摘要已生成', '操作成功')
+      },
+      onError: (error) => {
+        stopPolling()
+        
+        // 错误状态下恢复章节状态
+        if (project.value?.chapters) {
+          const chapter = project.value.chapters.find(ch => ch.chapter_number === selectedChapterNumber.value)
+          if (chapter) {
+            chapter.generation_status = 'waiting_for_confirm'
+          }
+        }
+        
+        globalAlert.showError(`选择章节版本失败: ${error}`, '选择失败')
+      }
+    })
+
+    startPolling()
   } catch (error) {
     console.error('选择章节版本失败:', error)
     // 错误状态下恢复章节状态
     if (project.value?.chapters) {
       const chapter = project.value.chapters.find(ch => ch.chapter_number === selectedChapterNumber.value)
       if (chapter) {
-        chapter.generation_status = 'waiting_for_confirm' // Or the previous state
+        chapter.generation_status = 'waiting_for_confirm'
       }
     }
     globalAlert.showError(`选择章节版本失败: ${error instanceof Error ? error.message : '未知错误'}`, '选择失败')

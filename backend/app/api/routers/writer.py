@@ -29,6 +29,7 @@ from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
 from ...services.task_service import TaskService
+from ...services.task_service import TaskService
 from ...services.vector_store_service import VectorStoreService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 from ...repositories.system_config_repository import SystemConfigRepository
@@ -120,15 +121,16 @@ async def _resolve_version_count(session: AsyncSession) -> int:
     return 3
 
 
-@router.post("/novels/{project_id}/chapters/select", response_model=NovelProjectSchema)
+@router.post("/novels/{project_id}/chapters/select", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def select_chapter_version(
     project_id: str,
     request: SelectVersionRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
-) -> NovelProjectSchema:
+) -> TaskResponse:
+    """选择章节版本并创建异步任务处理摘要生成和向量库同步"""
     novel_service = NovelService(session)
-    llm_service = LLMService(session)
+    task_service = TaskService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     chapter = next((ch for ch in project.chapters if ch.chapter_number == request.chapter_number), None)
@@ -136,7 +138,10 @@ async def select_chapter_version(
         logger.warning("项目 %s 未找到第 %s 章，无法选择版本", project_id, request.chapter_number)
         raise HTTPException(status_code=404, detail="章节不存在")
 
+    # 先选择版本（这是快速操作）
     selected = await novel_service.select_chapter_version(chapter, request.version_index)
+    await session.commit()
+    
     logger.info(
         "用户 %s 选择了项目 %s 第 %s 章的第 %s 个版本",
         current_user.id,
@@ -144,46 +149,35 @@ async def select_chapter_version(
         request.chapter_number,
         request.version_index,
     )
-    if selected and selected.content:
-        summary = await llm_service.get_summary(
-            selected.content,
-            temperature=0.15,
-            user_id=current_user.id,
-            timeout=180.0,
-        )
-        chapter.real_summary = remove_think_tags(summary)
-        await session.commit()
 
-        # 选定版本后同步向量库，确保后续章节可检索到最新内容
-        vector_store: Optional[VectorStoreService]
-        if not settings.vector_store_enabled:
-            vector_store = None
-        else:
-            try:
-                vector_store = VectorStoreService()
-            except RuntimeError as exc:
-                logger.warning("向量库初始化失败，跳过章节向量同步: %s", exc)
-                vector_store = None
-
-        if vector_store:
-            ingestion_service = ChapterIngestionService(llm_service=llm_service, vector_store=vector_store)
-            outline = next((item for item in project.outlines if item.chapter_number == chapter.chapter_number), None)
-            chapter_title = outline.title if outline and outline.title else f"第{chapter.chapter_number}章"
-            await ingestion_service.ingest_chapter(
-                project_id=project_id,
-                chapter_number=chapter.chapter_number,
-                title=chapter_title,
-                content=selected.content,
-                summary=chapter.real_summary,
-                user_id=current_user.id,
-            )
-            logger.info(
-                "项目 %s 第 %s 章已同步至向量库",
-                project_id,
-                chapter.chapter_number,
-            )
-
-    return await _load_project_schema(novel_service, project_id, current_user.id)
+    # 创建异步任务处理摘要生成和向量库同步
+    input_data = {
+        "project_id": project_id,
+        "chapter_number": request.chapter_number,
+        "version_index": request.version_index,
+    }
+    
+    task = await task_service.create_task(
+        user_id=current_user.id,
+        task_type="chapter_select",
+        input_data=input_data,
+        max_retries=2,
+    )
+    await session.commit()
+    
+    logger.info(
+        "用户 %s 创建章节选择任务 %s，项目 %s 第 %s 章",
+        current_user.id,
+        task.id,
+        project_id,
+        request.chapter_number,
+    )
+    
+    return TaskResponse(
+        task_id=task.id,
+        status=task.status,
+        created_at=task.created_at
+    )
 
 
 @router.post("/novels/{project_id}/chapters/evaluate", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
