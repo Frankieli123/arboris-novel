@@ -58,22 +58,23 @@
           <WDWorkspace
             :project="project"
             :selected-chapter-number="selectedChapterNumber"
-          :generating-chapter="generatingChapter"
-          :evaluating-chapter="evaluatingChapter"
-          :show-version-selector="showVersionSelector"
-          :chapter-generation-result="chapterGenerationResult"
-          :selected-version-index="selectedVersionIndex"
-          :available-versions="availableVersions"
-          :is-selecting-version="isSelectingVersion"
-          @regenerate-chapter="regenerateChapter"
-          @evaluate-chapter="evaluateChapter"
-          @hide-version-selector="hideVersionSelector"
-          @update:selected-version-index="selectedVersionIndex = $event"
-          @show-version-detail="showVersionDetail"
-          @confirm-version-selection="confirmVersionSelection"
-          @generate-chapter="generateChapter"
-          @show-evaluation-detail="showEvaluationDetailModal = true"
-          @edit-chapter="editChapterContent"
+            :generating-chapter="generatingChapter"
+            :evaluating-chapter="evaluatingChapter"
+            :show-version-selector="showVersionSelector"
+            :chapter-generation-result="chapterGenerationResult"
+            :selected-version-index="selectedVersionIndex"
+            :available-versions="availableVersions"
+            :is-selecting-version="isSelectingVersion"
+            @regenerate-chapter="regenerateChapter"
+            @evaluate-chapter="evaluateChapter"
+            @hide-version-selector="hideVersionSelector"
+            @update:selected-version-index="selectedVersionIndex = $event"
+            @show-version-detail="showVersionDetail"
+            @confirm-version-selection="confirmVersionSelection"
+            @generate-chapter="generateChapter"
+            @show-version-selector="openVersionSelector"
+            @show-evaluation-detail="showEvaluationDetailModal = true"
+            @edit-chapter="editChapterContent"
           />
         </div>
       </div>
@@ -349,6 +350,15 @@ const showVersionDetail = (versionIndex: number) => {
 // 关闭版本详情弹窗
 const closeVersionDetail = () => {
   showVersionDetailModal.value = false
+}
+
+// 已完成章节中 "查看所有版本" 按钮：切换到版本选择视图
+const openVersionSelector = () => {
+  if (!selectedChapter.value) return
+  if (!selectedChapter.value.versions || selectedChapter.value.versions.length === 0) return
+
+  // 将当前章节状态切换为 waiting_for_confirm，以复用现有 VersionSelector 渲染逻辑
+  selectedChapter.value.generation_status = 'waiting_for_confirm'
 }
 
 // 隐藏版本选择器，返回内容视图
