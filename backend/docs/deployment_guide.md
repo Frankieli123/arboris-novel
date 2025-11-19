@@ -111,9 +111,10 @@ SHOW INDEX FROM async_tasks;  -- MySQL
 # 根据服务器性能和 LLM API 限制调整
 TASK_WORKER_MAX_WORKERS=3
 
-# 任务最大执行时间（秒，默认: 600）
+# 任务最大执行时间（秒，默认: 1500）
 # 超过此时间的任务将被标记为超时
-TASK_MAX_EXECUTION_TIME=600
+# 注意：蓝图生成的LLM调用超时为1200秒，因此此值应大于1200秒
+TASK_MAX_EXECUTION_TIME=1500
 
 # 任务保留天数（默认: 7）
 # 完成后的任务保留多少天后自动清理
@@ -276,7 +277,7 @@ services:
   backend:
     environment:
       - TASK_WORKER_MAX_WORKERS=3
-      - TASK_MAX_EXECUTION_TIME=600
+      - TASK_MAX_EXECUTION_TIME=1500
       - TASK_RETENTION_DAYS=7
 ```
 

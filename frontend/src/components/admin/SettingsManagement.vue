@@ -34,6 +34,99 @@
     <n-card :bordered="false">
       <template #header>
         <div class="card-header">
+          <span class="card-title">模型设置</span>
+          <n-button quaternary size="small" @click="fetchModelSettings" :loading="modelLoading">
+            刷新
+          </n-button>
+        </div>
+      </template>
+      <n-spin :show="modelLoading">
+        <n-alert v-if="modelError" type="error" closable @close="modelError = null">
+          {{ modelError }}
+        </n-alert>
+        <n-form label-placement="top" class="settings-form">
+          <n-form-item label="LLM API Key">
+            <n-input
+              v-model:value="modelSettings.llmApiKey"
+              type="password"
+              show-password-on="click"
+              placeholder="请输入 API Key"
+            />
+          </n-form-item>
+          <n-form-item label="LLM Base URL">
+            <n-input
+              v-model:value="modelSettings.llmBaseUrl"
+              placeholder="例如: https://api.openai.com/v1"
+            />
+          </n-form-item>
+          <n-form-item label="LLM 模型名称">
+            <n-input
+              v-model:value="modelSettings.llmModel"
+              placeholder="例如: gpt-4o"
+            />
+          </n-form-item>
+          <n-space justify="end">
+            <n-button type="primary" :loading="modelSaving" @click="saveModelSettings">
+              保存设置
+            </n-button>
+          </n-space>
+        </n-form>
+      </n-spin>
+    </n-card>
+
+    <n-card :bordered="false">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">嵌入模型设置</span>
+          <n-button quaternary size="small" @click="fetchEmbeddingSettings" :loading="embeddingLoading">
+            刷新
+          </n-button>
+        </div>
+      </template>
+      <n-spin :show="embeddingLoading">
+        <n-alert v-if="embeddingError" type="error" closable @close="embeddingError = null">
+          {{ embeddingError }}
+        </n-alert>
+        <n-form label-placement="top" class="settings-form">
+          <n-form-item label="嵌入模型提供方">
+            <n-select
+              v-model:value="embeddingSettings.provider"
+              :options="providerOptions"
+              placeholder="选择提供方"
+            />
+          </n-form-item>
+          <n-form-item label="嵌入模型 Base URL">
+            <n-input
+              v-model:value="embeddingSettings.baseUrl"
+              placeholder="留空则使用 LLM Base URL"
+            />
+          </n-form-item>
+          <n-form-item label="嵌入模型名称">
+            <n-input
+              v-model:value="embeddingSettings.model"
+              placeholder="例如: text-embedding-3-large"
+            />
+          </n-form-item>
+          <n-form-item label="向量维度">
+            <n-input-number
+              v-model:value="embeddingSettings.vectorSize"
+              :min="0"
+              placeholder="留空则自动检测"
+              clearable
+            />
+          </n-form-item>
+          <n-space justify="end">
+            <n-button type="primary" :loading="embeddingSaving" @click="saveEmbeddingSettings">
+              保存设置
+            </n-button>
+          </n-space>
+        </n-form>
+      </n-spin>
+    </n-card>
+
+    <n-card :bordered="false">
+      <template #header>
+        <div class="card-header">
           <span class="card-title">系统配置</span>
           <n-button type="primary" size="small" @click="openCreateModal">
             新增配置
@@ -104,6 +197,7 @@ import {
   NInputNumber,
   NModal,
   NPopconfirm,
+  NSelect,
   NSpace,
   NSpin,
   type DataTableColumns
@@ -124,6 +218,30 @@ const dailyLimit = ref<number | null>(null)
 const dailyLimitLoading = ref(false)
 const dailyLimitSaving = ref(false)
 const dailyLimitError = ref<string | null>(null)
+
+const modelSettings = reactive({
+  llmApiKey: '',
+  llmBaseUrl: '',
+  llmModel: ''
+})
+const modelLoading = ref(false)
+const modelSaving = ref(false)
+const modelError = ref<string | null>(null)
+
+const embeddingSettings = reactive({
+  provider: 'openai',
+  baseUrl: '',
+  model: '',
+  vectorSize: null as number | null
+})
+const embeddingLoading = ref(false)
+const embeddingSaving = ref(false)
+const embeddingError = ref<string | null>(null)
+
+const providerOptions = [
+  { label: 'OpenAI', value: 'openai' },
+  { label: 'Ollama', value: 'ollama' }
+]
 
 const configs = ref<SystemConfig[]>([])
 const configLoading = ref(false)
@@ -168,6 +286,93 @@ const saveDailyLimit = async () => {
     showAlert(err instanceof Error ? err.message : '保存失败', 'error')
   } finally {
     dailyLimitSaving.value = false
+  }
+}
+
+const fetchModelSettings = async () => {
+  modelLoading.value = true
+  modelError.value = null
+  try {
+    const configs = await AdminAPI.listSystemConfigs()
+    const configMap = new Map(configs.map(c => [c.key, c.value]))
+    
+    modelSettings.llmApiKey = configMap.get('llm.api_key') || ''
+    modelSettings.llmBaseUrl = configMap.get('llm.base_url') || ''
+    modelSettings.llmModel = configMap.get('llm.model') || ''
+  } catch (err) {
+    modelError.value = err instanceof Error ? err.message : '加载模型设置失败'
+  } finally {
+    modelLoading.value = false
+  }
+}
+
+const saveModelSettings = async () => {
+  modelSaving.value = true
+  try {
+    const updates = [
+      { key: 'llm.api_key', value: modelSettings.llmApiKey, description: '默认 LLM API Key' },
+      { key: 'llm.base_url', value: modelSettings.llmBaseUrl, description: '默认大模型 API Base URL' },
+      { key: 'llm.model', value: modelSettings.llmModel, description: '默认 LLM 模型名称' }
+    ]
+    
+    for (const { key, value, description } of updates) {
+      if (value) {
+        await AdminAPI.upsertSystemConfig(key, { value, description })
+      }
+    }
+    
+    showAlert('模型设置已保存', 'success')
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+  } finally {
+    modelSaving.value = false
+  }
+}
+
+const fetchEmbeddingSettings = async () => {
+  embeddingLoading.value = true
+  embeddingError.value = null
+  try {
+    const configs = await AdminAPI.listSystemConfigs()
+    const configMap = new Map(configs.map(c => [c.key, c.value]))
+    
+    embeddingSettings.provider = configMap.get('embedding.provider') || 'openai'
+    embeddingSettings.baseUrl = configMap.get('embedding.base_url') || ''
+    embeddingSettings.model = configMap.get('embedding.model') || ''
+    const vectorSize = configMap.get('embedding.model_vector_size')
+    embeddingSettings.vectorSize = vectorSize ? parseInt(vectorSize) : null
+  } catch (err) {
+    embeddingError.value = err instanceof Error ? err.message : '加载嵌入模型设置失败'
+  } finally {
+    embeddingLoading.value = false
+  }
+}
+
+const saveEmbeddingSettings = async () => {
+  embeddingSaving.value = true
+  try {
+    const updates = [
+      { key: 'embedding.provider', value: embeddingSettings.provider, description: '嵌入模型提供方' },
+      { key: 'embedding.base_url', value: embeddingSettings.baseUrl, description: '嵌入模型 Base URL' },
+      { key: 'embedding.model', value: embeddingSettings.model, description: '嵌入模型名称' },
+      { 
+        key: 'embedding.model_vector_size', 
+        value: embeddingSettings.vectorSize?.toString() || '', 
+        description: '嵌入向量维度' 
+      }
+    ]
+    
+    for (const { key, value, description } of updates) {
+      if (value) {
+        await AdminAPI.upsertSystemConfig(key, { value, description })
+      }
+    }
+    
+    showAlert('嵌入模型设置已保存', 'success')
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+  } finally {
+    embeddingSaving.value = false
   }
 }
 
@@ -316,6 +521,8 @@ const columns: DataTableColumns<SystemConfig> = [
 
 onMounted(() => {
   fetchDailyLimit()
+  fetchModelSettings()
+  fetchEmbeddingSettings()
   fetchConfigs()
 })
 </script>
@@ -341,6 +548,10 @@ onMounted(() => {
 
 .limit-form {
   max-width: 360px;
+}
+
+.settings-form {
+  max-width: 600px;
 }
 
 .config-modal {

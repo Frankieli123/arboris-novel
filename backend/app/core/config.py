@@ -175,9 +175,9 @@ class Settings(BaseSettings):
 
     # -------------------- 任务配置 --------------------
     task_max_execution_time: int = Field(
-        default=900,
+        default=1500,
         env="TASK_MAX_EXECUTION_TIME",
-        description="任务最大执行时间（秒），默认15分钟"
+        description="任务最大执行时间（秒），默认25分钟"
     )
     task_retention_days: int = Field(
         default=7,
