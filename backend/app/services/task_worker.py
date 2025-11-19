@@ -692,7 +692,7 @@ IMPORTANT: 你的回复必须是合法的 JSON 对象，并严格包含以下字
             conversation_history=formatted_history,
             temperature=0.3,
             user_id=user_id,
-            timeout=600.0,
+            timeout=1200.0,
         )
         blueprint_raw = remove_think_tags(blueprint_raw)
         
@@ -946,7 +946,7 @@ IMPORTANT: 你的回复必须是合法的 JSON 对象，并严格包含以下字
                 conversation_history=[{"role": "user", "content": prompt_input}],
                 temperature=0.9,
                 user_id=user_id,
-                timeout=600.0,
+                timeout=1200.0,
             )
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
