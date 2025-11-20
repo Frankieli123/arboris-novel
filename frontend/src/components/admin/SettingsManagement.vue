@@ -34,6 +34,98 @@
     <n-card :bordered="false">
       <template #header>
         <div class="card-header">
+          <span class="card-title">API 设置</span>
+        </div>
+      </template>
+      <n-form label-placement="top" class="limit-form">
+        <n-form-item label="默认 LLM API Key（llm.api_key）">
+          <n-input
+            v-model:value="apiSettings.apiKey"
+            type="password"
+            placeholder="存储在系统配置 llm.api_key 中"
+          />
+        </n-form-item>
+        <n-form-item label="默认 LLM Base URL（llm.base_url）">
+          <n-input
+            v-model:value="apiSettings.baseUrl"
+            placeholder="存储在系统配置 llm.base_url 中"
+          />
+        </n-form-item>
+        <n-form-item label="默认 LLM 模型（llm.model）">
+          <n-input
+            v-model:value="apiSettings.model"
+            placeholder="存储在系统配置 llm.model 中"
+          />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button type="primary" :loading="apiSettingsSaving" @click="saveApiSettings">
+            保存 API 设置
+          </n-button>
+        </n-space>
+      </n-form>
+    </n-card>
+
+    <n-card :bordered="false">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">嵌入模型设置</span>
+        </div>
+      </template>
+      <n-form label-placement="top" class="limit-form">
+        <n-form-item label="提供方（embedding.provider）">
+          <n-input
+            v-model:value="embeddingSettings.provider"
+            placeholder="如 openai 或 ollama"
+          />
+        </n-form-item>
+        <n-form-item label="嵌入模型 API Key（embedding.api_key）">
+          <n-input
+            v-model:value="embeddingSettings.apiKey"
+            type="password"
+            placeholder="留空则使用默认 LLM API Key"
+          />
+        </n-form-item>
+        <n-form-item label="嵌入模型 Base URL（embedding.base_url）">
+          <n-input
+            v-model:value="embeddingSettings.baseUrl"
+            placeholder="留空则使用默认 LLM Base URL"
+          />
+        </n-form-item>
+        <n-form-item label="嵌入模型名称（embedding.model）">
+          <n-input
+            v-model:value="embeddingSettings.model"
+            placeholder="例如 text-embedding-3-large"
+          />
+        </n-form-item>
+        <n-form-item label="向量维度（embedding.model_vector_size）">
+          <n-input
+            v-model:value="embeddingSettings.vectorSize"
+            placeholder="留空则自动检测"
+          />
+        </n-form-item>
+        <n-form-item label="Ollama 嵌入 Base URL（ollama.embedding_base_url）">
+          <n-input
+            v-model:value="embeddingSettings.ollamaBaseUrl"
+            placeholder="仅在 provider 为 ollama 时使用"
+          />
+        </n-form-item>
+        <n-form-item label="Ollama 嵌入模型（ollama.embedding_model）">
+          <n-input
+            v-model:value="embeddingSettings.ollamaModel"
+            placeholder="如 nomic-embed-text"
+          />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button type="primary" :loading="embeddingSettingsSaving" @click="saveEmbeddingSettings">
+            保存嵌入设置
+          </n-button>
+        </n-space>
+      </n-form>
+    </n-card>
+
+    <n-card :bordered="false">
+      <template #header>
+        <div class="card-header">
           <span class="card-title">系统配置</span>
           <n-button type="primary" size="small" @click="openCreateModal">
             新增配置
@@ -130,6 +222,25 @@ const configLoading = ref(false)
 const configSaving = ref(false)
 const configError = ref<string | null>(null)
 
+const apiSettings = reactive({
+  apiKey: '',
+  baseUrl: '',
+  model: ''
+})
+
+const embeddingSettings = reactive({
+  provider: '',
+  apiKey: '',
+  baseUrl: '',
+  model: '',
+  vectorSize: '',
+  ollamaBaseUrl: '',
+  ollamaModel: ''
+})
+
+const apiSettingsSaving = ref(false)
+const embeddingSettingsSaving = ref(false)
+
 const configModalVisible = ref(false)
 const isCreateMode = ref(true)
 const configForm = reactive<SystemConfig>({
@@ -141,6 +252,22 @@ const configForm = reactive<SystemConfig>({
 const rowKey = (row: SystemConfig) => row.key
 
 const modalTitle = computed(() => (isCreateMode.value ? '新增配置项' : '编辑配置项'))
+
+const hydrateSettingsFromConfigs = () => {
+  const map = new Map(configs.value.map((item) => [item.key, item]))
+
+  apiSettings.apiKey = map.get('llm.api_key')?.value || ''
+  apiSettings.baseUrl = map.get('llm.base_url')?.value || ''
+  apiSettings.model = map.get('llm.model')?.value || ''
+
+  embeddingSettings.provider = map.get('embedding.provider')?.value || ''
+  embeddingSettings.apiKey = map.get('embedding.api_key')?.value || ''
+  embeddingSettings.baseUrl = map.get('embedding.base_url')?.value || ''
+  embeddingSettings.model = map.get('embedding.model')?.value || ''
+  embeddingSettings.vectorSize = map.get('embedding.model_vector_size')?.value || ''
+  embeddingSettings.ollamaBaseUrl = map.get('ollama.embedding_base_url')?.value || ''
+  embeddingSettings.ollamaModel = map.get('ollama.embedding_model')?.value || ''
+}
 
 const fetchDailyLimit = async () => {
   dailyLimitLoading.value = true
@@ -176,10 +303,75 @@ const fetchConfigs = async () => {
   configError.value = null
   try {
     configs.value = await AdminAPI.listSystemConfigs()
+    hydrateSettingsFromConfigs()
   } catch (err) {
     configError.value = err instanceof Error ? err.message : '加载配置失败'
   } finally {
     configLoading.value = false
+  }
+}
+
+const saveApiSettings = async () => {
+  apiSettingsSaving.value = true
+  try {
+    await AdminAPI.upsertSystemConfig('llm.api_key', {
+      value: apiSettings.apiKey,
+      description: '默认 LLM API Key，用于后台调用大模型。'
+    })
+    await AdminAPI.upsertSystemConfig('llm.base_url', {
+      value: apiSettings.baseUrl,
+      description: '默认大模型 API Base URL。'
+    })
+    await AdminAPI.upsertSystemConfig('llm.model', {
+      value: apiSettings.model,
+      description: '默认 LLM 模型名称。'
+    })
+    await fetchConfigs()
+    showAlert('API 设置已保存', 'success')
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+  } finally {
+    apiSettingsSaving.value = false
+  }
+}
+
+const saveEmbeddingSettings = async () => {
+  embeddingSettingsSaving.value = true
+  try {
+    await AdminAPI.upsertSystemConfig('embedding.provider', {
+      value: embeddingSettings.provider,
+      description: '嵌入模型提供方，支持 openai 或 ollama。'
+    })
+    await AdminAPI.upsertSystemConfig('embedding.api_key', {
+      value: embeddingSettings.apiKey,
+      description: '嵌入模型专用 API Key，留空则使用默认 LLM API Key。'
+    })
+    await AdminAPI.upsertSystemConfig('embedding.base_url', {
+      value: embeddingSettings.baseUrl,
+      description: '嵌入模型使用的 Base URL，留空则使用默认 LLM Base URL。'
+    })
+    await AdminAPI.upsertSystemConfig('embedding.model', {
+      value: embeddingSettings.model,
+      description: 'OpenAI 嵌入模型名称。'
+    })
+    await AdminAPI.upsertSystemConfig('embedding.model_vector_size', {
+      value: embeddingSettings.vectorSize,
+      description: '嵌入向量维度，留空则自动检测。'
+    })
+    await AdminAPI.upsertSystemConfig('ollama.embedding_base_url', {
+      value: embeddingSettings.ollamaBaseUrl,
+      description: 'Ollama 嵌入模型服务地址。'
+    })
+    await AdminAPI.upsertSystemConfig('ollama.embedding_model', {
+      value: embeddingSettings.ollamaModel,
+      description: 'Ollama 嵌入模型名称。'
+    })
+    await fetchConfigs()
+    showAlert('嵌入模型设置已保存', 'success')
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+  } finally {
+    embeddingSettingsSaving.value = false
   }
 }
 
