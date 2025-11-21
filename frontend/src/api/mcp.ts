@@ -46,6 +46,7 @@ export interface MCPPlugin {
   category?: string | null
   config?: Record<string, any> | null
   user_enabled?: boolean | null
+  is_default?: boolean
   created_at: string
   updated_at: string
 }
