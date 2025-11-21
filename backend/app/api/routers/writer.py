@@ -4,7 +4,7 @@ import os
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.config import settings
@@ -473,28 +473,65 @@ async def generate_chapter_outline(
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
-    
+
     # 初始化 MCP 工具服务
     mcp_tool_service = MCPToolService(session, mcp_registry)
-    
+
     # 初始化 LLM 服务，传入 MCP 工具服务
     llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
 
+    # 校验项目归属
     await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    # 读取当前项目蓝图与已有章节大纲，用于智能判断生成模式
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    blueprint_dict = project_schema.blueprint.model_dump()
+    existing_outlines = blueprint_dict.get("chapter_outline") or []
+    existing_count = len(existing_outlines)
+    last_chapter_number = (
+        max(outline.get("chapter_number", 0) for outline in existing_outlines)
+        if existing_outlines
+        else 0
+    )
+
+    # 计算实际执行模式：auto 根据是否已有大纲自动转为 new / continue
+    requested_mode = getattr(request, "mode", "auto") or "auto"
+    actual_mode = requested_mode
+    if actual_mode == "auto":
+        actual_mode = "continue" if existing_outlines else "new"
+
+    if actual_mode == "continue" and not existing_outlines:
+        logger.warning("项目 %s 请求续写大纲但当前没有任何章节大纲", project_id)
+        raise HTTPException(status_code=400, detail="续写模式需要已有章节大纲，当前项目没有大纲")
+
+    # 计算本次实际生成的起始章节与数量
+    if actual_mode == "new":
+        effective_start = 1
+        effective_num = request.num_chapters
+        # 全新生成时，为避免旧结构干扰提示词，将蓝图中的章节大纲清空后再送入模型
+        blueprint_dict["chapter_outline"] = []
+    elif actual_mode == "continue":
+        effective_start = last_chapter_number + 1
+        effective_num = request.num_chapters
+    else:
+        # 兼容旧行为：直接使用调用方提供的起始章节
+        effective_start = request.start_chapter
+        effective_num = request.num_chapters
+
     logger.info(
-        "用户 %s 请求生成项目 %s 的章节大纲，起始章节 %s，数量 %s",
+        "用户 %s 请求生成项目 %s 的章节大纲，模式 %s(实际 %s)，起始章节 %s，数量 %s，现有大纲数 %s",
         current_user.id,
         project_id,
-        request.start_chapter,
-        request.num_chapters,
+        requested_mode,
+        actual_mode,
+        effective_start,
+        effective_num,
+        existing_count,
     )
     outline_prompt = await prompt_service.get_prompt("outline")
     if not outline_prompt:
         logger.error("缺少大纲提示词，项目 %s 大纲生成失败", project_id)
         raise HTTPException(status_code=500, detail="缺少大纲提示词，请联系管理员配置 'outline' 提示词")
-
-    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
-    blueprint_dict = project_schema.blueprint.model_dump()
 
     mcp_reference_materials = ""
     try:
@@ -533,12 +570,31 @@ async def generate_chapter_outline(
         )
         mcp_reference_materials = ""
 
+    # 组装提示负载，将模式与续写指导信息一并透传给 LLM
+    wait_to_generate: Dict[str, Any] = {
+        "start_chapter": effective_start,
+        "num_chapters": effective_num,
+        "mode": actual_mode,
+        "original_start_chapter": request.start_chapter,
+        "original_num_chapters": request.num_chapters,
+        "keep_existing": getattr(request, "keep_existing", True),
+    }
+
+    if existing_outlines:
+        wait_to_generate["existing_outline_count"] = existing_count
+        wait_to_generate["last_chapter_number"] = last_chapter_number
+
+    story_direction = getattr(request, "story_direction", None)
+    if story_direction:
+        wait_to_generate["story_direction"] = story_direction
+
+    plot_stage = getattr(request, "plot_stage", None)
+    if plot_stage:
+        wait_to_generate["plot_stage"] = plot_stage
+
     payload = {
         "novel_blueprint": blueprint_dict,
-        "wait_to_generate": {
-            "start_chapter": request.start_chapter,
-            "num_chapters": request.num_chapters,
-        },
+        "wait_to_generate": wait_to_generate,
     }
     if mcp_reference_materials:
         payload["mcp_references"] = mcp_reference_materials
@@ -570,6 +626,12 @@ async def generate_chapter_outline(
         ) from exc
 
     new_outlines = data.get("chapters", [])
+
+    # new 模式：按 MuMu 行为清空旧大纲后整体写入新的章节大纲
+    if actual_mode == "new":
+        await session.execute(
+            delete(ChapterOutline).where(ChapterOutline.project_id == project_id)
+        )
     for item in new_outlines:
         stmt = (
             select(ChapterOutline)
@@ -593,7 +655,7 @@ async def generate_chapter_outline(
                 )
             )
     await session.commit()
-    logger.info("项目 %s 章节大纲生成完成", project_id)
+    logger.info("项目 %s 章节大纲生成完成，新增/更新大纲数 %s，模式 %s", project_id, len(new_outlines), actual_mode)
 
     return await novel_service.get_project_schema(project_id, current_user.id)
 

@@ -96,6 +96,27 @@ class MCPPluginResponse(MCPPluginBase):
     created_at: datetime = Field(..., description="创建时间")
     updated_at: datetime = Field(..., description="更新时间")
 
+    @field_validator("headers", "config", mode="before")
+    @classmethod
+    def parse_json_fields(cls, v: Any):
+        """将字符串形式的 JSON 解析为字典。"""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            value = v.strip()
+            if not value:
+                return None
+            try:
+                parsed = json.loads(value)
+                if not isinstance(parsed, dict):
+                    raise ValueError("JSON 必须是对象类型（字典）")
+                return parsed
+            except json.JSONDecodeError as e:
+                raise ValueError(f"无效的 JSON 格式: {str(e)}")
+        return v
+
     class Config:
         from_attributes = True
 

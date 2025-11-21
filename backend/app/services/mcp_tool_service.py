@@ -70,6 +70,32 @@ class MCPToolService:
         self._tool_cache: Dict[str, ToolCacheEntry] = {}
         self._metrics: Dict[str, ToolMetrics] = {}
     
+    def _get_plugin_headers(self, plugin) -> Optional[Dict[str, Any]]:
+        """将插件的 headers 字段解析为字典。"""
+        headers = getattr(plugin, "headers", None)
+        if headers is None or isinstance(headers, dict):
+            return headers
+        if isinstance(headers, str):
+            value = headers.strip()
+            if not value:
+                return None
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, dict):
+                    return parsed
+                logger.warning(
+                    "插件 %s headers 反序列化结果不是字典: %s",
+                    plugin.plugin_name,
+                    type(parsed).__name__,
+                )
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "插件 %s headers 不是有效 JSON，已忽略: %s",
+                    plugin.plugin_name,
+                    exc,
+                )
+        return None
+    
     async def get_user_enabled_tools(
         self, user_id: int
     ) -> List[Dict[str, Any]]:
@@ -102,7 +128,7 @@ class MCPToolService:
                         user_id,
                         plugin.plugin_name,
                         plugin.server_url,
-                        plugin.headers
+                        self._get_plugin_headers(plugin)
                     )
                     converted_tools = self._convert_to_openai_format(mcp_tools, plugin.plugin_name)
                     
@@ -287,7 +313,7 @@ class MCPToolService:
                     plugin.server_url,
                     tool_name,
                     arguments,
-                    plugin.headers
+                    self._get_plugin_headers(plugin)
                 )
                 return result
             except Exception as exc:
@@ -412,7 +438,7 @@ class MCPToolService:
                 user_id,
                 plugin.plugin_name,
                 plugin.server_url,
-                plugin.headers
+                self._get_plugin_headers(plugin)
             )
             converted_tools = self._convert_to_openai_format(mcp_tools, plugin.plugin_name)
             

@@ -1,5 +1,6 @@
 """MCP 插件仓储，负责插件配置的数据库操作。"""
 
+import json
 from typing import Optional
 
 from sqlalchemy import or_, select
@@ -16,6 +17,22 @@ class MCPPluginRepository(BaseRepository[MCPPlugin]):
 
     def __init__(self, session: AsyncSession):
         super().__init__(session)
+
+    def _prepare_plugin_data(self, plugin_data: dict) -> dict:
+        """确保 JSON 字段使用字符串形式存储到数据库中。"""
+        data = dict(plugin_data) if plugin_data is not None else {}
+        for key in ("headers", "config"):
+            if key not in data:
+                continue
+            value = data[key]
+            if value is None or isinstance(value, str):
+                continue
+            data[key] = json.dumps(value, ensure_ascii=False)
+        return data
+
+    async def update_fields(self, instance: MCPPlugin, **values) -> MCPPlugin:
+        prepared_values = self._prepare_plugin_data(values)
+        return await super().update_fields(instance, **prepared_values)
 
     async def get_by_name(self, plugin_name: str) -> Optional[MCPPlugin]:
         """根据插件名称获取插件。"""
@@ -87,9 +104,10 @@ class MCPPluginRepository(BaseRepository[MCPPlugin]):
         Returns:
             创建的默认插件实例
         """
+        prepared_data = self._prepare_plugin_data(plugin_data)
         plugin = MCPPlugin(
             user_id=None,  # 关键：设置为 NULL 标识默认插件
-            **plugin_data
+            **prepared_data
         )
         await self.add(plugin)
         return plugin
@@ -104,9 +122,10 @@ class MCPPluginRepository(BaseRepository[MCPPlugin]):
         Returns:
             创建的用户插件实例
         """
+        prepared_data = self._prepare_plugin_data(plugin_data)
         plugin = MCPPlugin(
             user_id=user_id,  # 关键：设置为用户ID
-            **plugin_data
+            **prepared_data
         )
         await self.add(plugin)
         return plugin

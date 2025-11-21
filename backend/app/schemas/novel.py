@@ -154,6 +154,23 @@ class DeleteChapterRequest(BaseModel):
 class GenerateOutlineRequest(BaseModel):
     start_chapter: int
     num_chapters: int
+    # 生成模式：auto(自动判断，有大纲则续写，暂无则新建) / new(全新生成，从第1章开始覆盖) / continue(在现有大纲后续写)
+    mode: str = Field("auto", description="生成模式: auto(自动判断), new(全新生成), continue(续写)")
+    # 故事发展方向提示（续写模式下可选）
+    story_direction: Optional[str] = Field(
+        default=None,
+        description="故事发展方向提示，用于指导续写时的情节走向",
+    )
+    # 情节阶段：development(发展)、climax(高潮)、ending(结局)
+    plot_stage: str = Field(
+        default="development",
+        description="情节阶段: development(发展), climax(高潮), ending(结局)",
+    )
+    # 是否在续写时保留现有的大纲结构（预留字段，当前实现中仅作为提示信息透传给提示词）
+    keep_existing: bool = Field(
+        default=True,
+        description="是否保留现有大纲，仅在部分模式下作为提示信息使用",
+    )
 
 
 class BlueprintPatch(BaseModel):
