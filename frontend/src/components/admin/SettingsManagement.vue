@@ -147,61 +147,45 @@
     </template>
   </n-modal>
 
-  <!-- 插件创建/编辑模态框 -->
+  <!-- 插件创建模态框 -->
   <n-modal
     v-model:show="pluginModalVisible"
     preset="card"
-    :title="pluginModalTitle"
+    title="添加默认插件"
     class="plugin-modal"
-    :style="{ width: '640px', maxWidth: '92vw' }"
+    :style="{ width: '720px', maxWidth: '92vw' }"
   >
-    <n-form label-placement="top" :model="pluginForm">
-      <n-form-item label="插件名称" required>
+    <n-space vertical size="large">
+      <n-alert type="info">
+        粘贴标准 MCP 配置 JSON，系统自动提取插件名称。支持 HTTP 和 Stdio 类型
+      </n-alert>
+      
+      <n-form-item label="* MCP配置JSON">
         <n-input
-          v-model:value="pluginForm.plugin_name"
-          :disabled="!isPluginCreateMode"
-          placeholder="唯一标识符，如 exa-search"
+          v-model:value="pluginImportJson"
+          type="textarea"
+          :rows="16"
+          placeholder='{
+  "mcpServers": {
+    "exa": {
+      "type": "http",
+      "url": "https://mcp.exa.ai/mcp?exaApiKey=YOUR_API_KEY",
+      "headers": {}
+    }
+  }
+}'
         />
       </n-form-item>
-      <n-form-item label="显示名称" required>
-        <n-input
-          v-model:value="pluginForm.display_name"
-          placeholder="用户可见的名称，如 Exa 搜索"
-        />
-      </n-form-item>
-      <n-form-item label="服务器地址" required>
-        <n-input
-          v-model:value="pluginForm.server_url"
-          placeholder="MCP 服务器 URL，如 http://localhost:3000"
-        />
-      </n-form-item>
-      <n-form-item label="分类">
+
+      <n-form-item label="插件分类">
         <n-select
-          v-model:value="pluginForm.category"
+          v-model:value="pluginImportCategory"
           :options="categoryOptions"
-          placeholder="选择插件分类"
+          placeholder="选择插件的功能类别，用于AI智能匹配使用场景"
         />
       </n-form-item>
-      <n-form-item label="认证请求头 (JSON)">
-        <n-input
-          v-model:value="pluginHeadersJson"
-          type="textarea"
-          :rows="3"
-          placeholder='{"Authorization": "Bearer YOUR_TOKEN"}'
-        />
-      </n-form-item>
-      <n-form-item label="额外配置 (JSON)">
-        <n-input
-          v-model:value="pluginConfigJson"
-          type="textarea"
-          :rows="3"
-          placeholder='{"timeout": 30, "max_retries": 3}'
-        />
-      </n-form-item>
-      <n-form-item label="全局启用">
-        <n-switch v-model:value="pluginForm.enabled" />
-      </n-form-item>
-    </n-form>
+    </n-space>
+    
     <template #footer>
       <n-space justify="end">
         <n-button quaternary @click="closePluginModal">取消</n-button>
@@ -210,6 +194,41 @@
         </n-button>
       </n-space>
     </template>
+  </n-modal>
+
+  <!-- 导入结果模态框 -->
+  <n-modal
+    v-model:show="pluginResultModalVisible"
+    preset="card"
+    title="导入结果"
+    class="import-result-modal"
+    :style="{ width: '560px', maxWidth: '92vw' }"
+  >
+    <n-result
+      v-if="pluginImportResult"
+      :status="pluginImportResult.errors.length === 0 ? 'success' : 'warning'"
+      :title="pluginImportResult.summary"
+    >
+      <template #footer>
+        <n-space vertical>
+          <n-card v-if="pluginImportResult.created.length > 0" title="成功导入" size="small" type="success">
+            <n-ul>
+              <n-li v-for="name in pluginImportResult.created" :key="name">{{ name }}</n-li>
+            </n-ul>
+          </n-card>
+          <n-card v-if="pluginImportResult.skipped.length > 0" title="已跳过（已存在）" size="small" type="warning">
+            <n-ul>
+              <n-li v-for="name in pluginImportResult.skipped" :key="name">{{ name }}</n-li>
+            </n-ul>
+          </n-card>
+          <n-card v-if="pluginImportResult.errors.length > 0" title="导入失败" size="small" type="error">
+            <n-ul>
+              <n-li v-for="error in pluginImportResult.errors" :key="error">{{ error }}</n-li>
+            </n-ul>
+          </n-card>
+        </n-space>
+      </template>
+    </n-result>
   </n-modal>
 </template>
 
@@ -224,8 +243,10 @@ import {
   NFormItem,
   NInput,
   NInputNumber,
+  NLi,
   NModal,
   NPopconfirm,
+  NResult,
   NSelect,
   NSpace,
   NSpin,
@@ -233,6 +254,7 @@ import {
   NTabPane,
   NTabs,
   NTag,
+  NUl,
   type DataTableColumns
 } from 'naive-ui'
 
@@ -292,22 +314,25 @@ const pluginForm = reactive<MCPPluginCreate & { id?: number }>({
   config: null
 })
 
-const pluginHeadersJson = ref('')
-const pluginConfigJson = ref('')
+const pluginImportJson = ref('')
+const pluginImportCategory = ref<string | null>(null)
+const pluginResultModalVisible = ref(false)
+const pluginImportResult = ref<any>(null)
 
 const categoryOptions = [
-  { label: '通用', value: 'general' },
-  { label: '搜索', value: 'search' },
-  { label: '文件系统', value: 'filesystem' },
-  { label: '数据库', value: 'database' },
-  { label: '分析', value: 'analysis' }
+  { label: '搜索类 (Search) - 网络搜索、信息查询', value: 'search' },
+  { label: '文件系统 (Filesystem) - 文件读写、目录操作', value: 'filesystem' },
+  { label: '数据库 (Database) - 数据查询、数据管理', value: 'database' },
+  { label: 'API集成 (API) - 第三方服务调用', value: 'api' },
+  { label: '工具类 (Tools) - 实用工具、辅助功能', value: 'tools' },
+  { label: '其他 (Other)', value: 'other' }
 ]
 
 const rowKey = (row: SystemConfig) => row.key
 const pluginRowKey = (row: MCPPlugin) => row.id
 
 const modalTitle = computed(() => (isCreateMode.value ? '新增配置项' : '编辑配置项'))
-const pluginModalTitle = computed(() => (isPluginCreateMode.value ? '添加默认插件' : '编辑默认插件'))
+
 
 const fetchDailyLimit = async () => {
   dailyLimitLoading.value = true
@@ -477,29 +502,8 @@ const fetchDefaultPlugins = async () => {
 }
 
 const openCreatePluginModal = () => {
-  isPluginCreateMode.value = true
-  pluginForm.plugin_name = ''
-  pluginForm.display_name = ''
-  pluginForm.plugin_type = 'http'
-  pluginForm.server_url = ''
-  pluginForm.enabled = true
-  pluginForm.category = null
-  pluginHeadersJson.value = ''
-  pluginConfigJson.value = ''
-  pluginModalVisible.value = true
-}
-
-const openEditPluginModal = (plugin: MCPPlugin) => {
-  isPluginCreateMode.value = false
-  pluginForm.id = plugin.id
-  pluginForm.plugin_name = plugin.plugin_name
-  pluginForm.display_name = plugin.display_name
-  pluginForm.plugin_type = plugin.plugin_type
-  pluginForm.server_url = plugin.server_url
-  pluginForm.enabled = plugin.enabled
-  pluginForm.category = plugin.category || null
-  pluginHeadersJson.value = plugin.headers ? JSON.stringify(plugin.headers, null, 2) : ''
-  pluginConfigJson.value = plugin.config ? JSON.stringify(plugin.config, null, 2) : ''
+  pluginImportJson.value = ''
+  pluginImportCategory.value = null
   pluginModalVisible.value = true
 }
 
@@ -509,68 +513,40 @@ const closePluginModal = () => {
 }
 
 const submitPlugin = async () => {
-  if (!pluginForm.plugin_name.trim() || !pluginForm.display_name.trim() || !pluginForm.server_url.trim()) {
-    showAlert('插件名称、显示名称和服务器地址为必填项', 'error')
+  if (!pluginImportJson.value.trim()) {
+    showAlert('请输入 MCP 配置 JSON', 'error')
     return
   }
 
-  // Parse JSON fields
-  let headers = null
-  let config = null
-  
-  if (pluginHeadersJson.value.trim()) {
-    try {
-      headers = JSON.parse(pluginHeadersJson.value)
-    } catch (err) {
-      showAlert('认证请求头 JSON 格式错误', 'error')
-      return
-    }
+  let mcpConfig: any
+  try {
+    mcpConfig = JSON.parse(pluginImportJson.value)
+  } catch (err) {
+    showAlert('JSON 格式错误', 'error')
+    return
   }
-  
-  if (pluginConfigJson.value.trim()) {
-    try {
-      config = JSON.parse(pluginConfigJson.value)
-    } catch (err) {
-      showAlert('额外配置 JSON 格式错误', 'error')
-      return
+
+  // 如果用户选择了分类，为所有插件添加分类
+  if (pluginImportCategory.value && mcpConfig.mcpServers) {
+    for (const pluginName in mcpConfig.mcpServers) {
+      if (!mcpConfig.mcpServers[pluginName].category) {
+        mcpConfig.mcpServers[pluginName].category = pluginImportCategory.value
+      }
     }
   }
 
   pluginSaving.value = true
   try {
-    const payload: MCPPluginCreate = {
-      plugin_name: pluginForm.plugin_name.trim(),
-      display_name: pluginForm.display_name.trim(),
-      plugin_type: pluginForm.plugin_type || 'http',
-      server_url: pluginForm.server_url.trim(),
-      headers,
-      enabled: pluginForm.enabled,
-      category: pluginForm.category?.trim() || null,
-      config
-    }
-
-    if (isPluginCreateMode.value) {
-      const created = await AdminAPI.createDefaultMCPPlugin(payload)
-      defaultPlugins.value.unshift(created)
-      showAlert('默认插件已创建', 'success')
-    } else {
-      const updated = await AdminAPI.updateDefaultMCPPlugin(pluginForm.id!, {
-        display_name: payload.display_name,
-        server_url: payload.server_url,
-        headers: payload.headers,
-        enabled: payload.enabled,
-        category: payload.category,
-        config: payload.config
-      })
-      const index = defaultPlugins.value.findIndex((p) => p.id === updated.id)
-      if (index !== -1) {
-        defaultPlugins.value.splice(index, 1, updated)
-      }
-      showAlert('默认插件已更新', 'success')
-    }
+    pluginImportResult.value = await AdminAPI.importMCPPluginsFromJson(mcpConfig)
     closePluginModal()
+    pluginResultModalVisible.value = true
+    
+    // 刷新插件列表
+    if (pluginImportResult.value.created.length > 0) {
+      await fetchDefaultPlugins()
+    }
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+    showAlert(err instanceof Error ? err.message : '导入失败', 'error')
   } finally {
     pluginSaving.value = false
   }
@@ -696,23 +672,13 @@ const pluginColumns: DataTableColumns<MCPPlugin> = [
     title: '操作',
     key: 'actions',
     align: 'center',
-    width: 180,
+    width: 100,
     render(row) {
       return h(
         NSpace,
         { justify: 'center', size: 'small' },
         {
           default: () => [
-            h(
-              NButton,
-              {
-                size: 'small',
-                type: 'primary',
-                tertiary: true,
-                onClick: () => openEditPluginModal(row)
-              },
-              { default: () => '编辑' }
-            ),
             h(
               NPopconfirm,
               {

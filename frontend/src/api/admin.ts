@@ -330,4 +330,17 @@ export class AdminAPI {
       method: 'DELETE'
     })
   }
+
+  static importMCPPluginsFromJson(mcpConfig: Record<string, any>): Promise<{
+    status: string
+    created: string[]
+    skipped: string[]
+    errors: string[]
+    summary: string
+  }> {
+    return this.request('/mcp/plugins/import', {
+      method: 'POST',
+      body: JSON.stringify(mcpConfig)
+    })
+  }
 }
