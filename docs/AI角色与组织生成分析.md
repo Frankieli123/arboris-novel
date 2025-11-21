@@ -778,3 +778,378 @@ async def generate_character_stream(request, http_request, db, user_ai_service):
 - 列出已有角色和组织
 - 确保新生成内容与现有设定一致
 
+
+### 5.2 提示词优化技巧
+
+#### 1. **明确角色定位**
+```
+- protagonist（主角）：要有成长空间和目标动机
+- supporting（配角）：要有独特性，不能是工具人
+- antagonist（反派）：要有合理动机，不能脸谱化
+```
+
+#### 2. **关系类型参考**
+提供常见关系类型列表，引导AI选择：
+```
+- 家族：父亲、母亲、兄弟、姐妹、子女、配偶、恋人
+- 社交：师父、徒弟、朋友、同学、同事、邻居、知己
+- 职业：上司、下属、合作伙伴
+- 敌对：敌人、仇人、竞争对手、宿敌
+```
+
+#### 3. **数值范围约束**
+```
+- intimacy_level: -100到100（负值表示敌对）
+- loyalty: 0到100
+- power_level: 0到100
+- rank: 整数，表示等级
+```
+
+#### 4. **示例引导**
+在提示词中提供JSON格式示例，让AI理解期望的输出结构。
+
+#### 5. **重复强调**
+关键要求在提示词末尾再次强调：
+```
+再次强调：
+1. 只返回纯JSON对象，不要有```json```这样的标记
+2. 文本中不要使用中文引号（""），改用【】或《》
+3. 不要有任何额外的文字说明
+```
+
+### 5.3 常见问题与解决方案
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| JSON解析失败 | AI返回了markdown标记 | 清理```json```等标记 |
+| 中文引号导致解析错误 | AI使用了""或'' | 提示词中明确禁止，使用【】替代 |
+| 引用不存在的角色 | AI产生幻觉 | 提供已有实体列表，明确约束 |
+| 内容过于简短 | 没有字数要求 | 明确每个字段的字数范围 |
+| 格式不统一 | 提示词不够明确 | 提供详细的JSON schema |
+
+---
+
+## 六、使用示例
+
+### 6.1 生成角色示例
+
+#### 请求
+```bash
+POST /api/characters/generate
+Content-Type: application/json
+
+{
+  "project_id": "proj_武侠世界_001",
+  "name": "李明轩",
+  "role_type": "protagonist",
+  "background": "出身武林世家，但不喜欢打打杀杀，更喜欢读书",
+  "requirements": "性格温和但有原则，关键时刻能挺身而出"
+}
+```
+
+#### 响应
+```json
+{
+  "id": "char_001",
+  "project_id": "proj_武侠世界_001",
+  "name": "李明轩",
+  "age": "25",
+  "gender": "男",
+  "is_organization": false,
+  "role_type": "protagonist",
+  "personality": "性格温和内敛，待人谦逊有礼。内心坚韧，有自己的原则和底线...",
+  "background": "出身【天剑门】世家，自幼习武。但他更喜欢读书，常与父亲理念不合...",
+  "appearance": "身高一米八，体型修长匀称。面容清秀，眉目间带着书卷气...",
+  "relationships": "与【天剑门】掌门李天行为父子关系，但理念不合。与师妹林婉儿青梅竹马...",
+  "traits": "[\"剑法精湛\", \"博览群书\", \"医术略通\"]",
+  "created_at": "2024-01-15T10:30:00Z"
+}
+```
+
+### 6.2 生成组织示例
+
+#### 请求
+```bash
+POST /api/organizations/generate
+Content-Type: application/json
+
+{
+  "project_id": "proj_武侠世界_001",
+  "name": "天剑门",
+  "organization_type": "武林门派",
+  "background": "江湖第一大派，以剑道闻名",
+  "requirements": "正派但有内部矛盾，改革派与保守派之争"
+}
+```
+
+#### 响应
+```json
+{
+  "id": "char_002",
+  "project_id": "proj_武侠世界_001",
+  "name": "天剑门",
+  "is_organization": true,
+  "role_type": "supporting",
+  "organization_type": "武林门派",
+  "personality": "【天剑门】以剑道为宗，讲究正气凛然、行侠仗义...",
+  "background": "【天剑门】创立于三百年前，由剑圣【李无极】所建...",
+  "appearance": "总部位于【青云山】之巅，建有【剑阁】【演武场】...",
+  "organization_purpose": "以剑道匡扶正义，维护武林秩序，铲除邪魔外道",
+  "traits": "[\"剑法精湛\", \"门规森严\", \"正派领袖\"]",
+  "created_at": "2024-01-15T10:35:00Z"
+}
+```
+
+同时在`organizations`表中创建详情记录：
+```json
+{
+  "id": "org_001",
+  "character_id": "char_002",
+  "project_id": "proj_武侠世界_001",
+  "member_count": 0,
+  "power_level": 85,
+  "location": "青云山脉，势力范围覆盖江南三省",
+  "motto": "剑指苍穹，正气长存",
+  "color": "青色"
+}
+```
+
+### 6.3 流式生成示例
+
+#### 请求
+```bash
+POST /api/characters/generate-stream
+Content-Type: application/json
+
+{
+  "project_id": "proj_武侠世界_001",
+  "name": "林婉儿",
+  "role_type": "supporting"
+}
+```
+
+#### SSE响应流
+```
+data: {"type":"progress","message":"开始生成角色...","progress":0}
+
+data: {"type":"progress","message":"获取项目上下文...","progress":10}
+
+data: {"type":"progress","message":"构建AI提示词...","progress":20}
+
+data: {"type":"progress","message":"调用AI服务...","progress":30}
+
+data: {"type":"progress","message":"解析AI响应...","progress":60}
+
+data: {"type":"progress","message":"创建角色记录...","progress":75}
+
+data: {"type":"progress","message":"处理关系网络...","progress":90}
+
+data: {"type":"progress","message":"角色生成完成！","progress":100,"status":"success"}
+
+data: {"type":"result","data":{"character":{"id":"char_003","name":"林婉儿",...}}}
+
+data: {"type":"done"}
+```
+
+---
+
+## 七、最佳实践
+
+### 7.1 提示词编写建议
+
+1. **明确输出格式**：提供完整的JSON schema
+2. **字数约束**：每个字段指定字数范围
+3. **防止幻觉**：明确只能引用已存在的实体
+4. **格式约束**：禁止markdown标记和中文引号
+5. **重复强调**：关键要求在末尾再次强调
+
+### 7.2 API调用建议
+
+1. **启用MCP**：角色生成时启用MCP工具增强
+2. **流式生成**：长时间任务使用流式接口
+3. **错误处理**：捕获JSON解析错误，提供友好提示
+4. **日志记录**：记录AI响应和解析过程，便于调试
+
+### 7.3 数据处理建议
+
+1. **关系验证**：确保引用的角色/组织存在
+2. **去重检查**：避免创建重复的关系记录
+3. **事务处理**：使用数据库事务确保数据一致性
+4. **自动创建**：组织角色自动创建Organization详情
+
+### 7.4 性能优化建议
+
+1. **批量查询**：一次性获取所有已有角色/组织
+2. **异步处理**：使用async/await提高并发性能
+3. **缓存上下文**：项目世界观可以缓存
+4. **限制数量**：上下文中只显示最近10个角色/组织
+
+---
+
+## 八、技术亮点
+
+### 8.1 统一的角色/组织模型
+
+角色和组织使用同一个`Character`表存储，通过`is_organization`字段区分：
+
+**优点**：
+- 简化数据模型
+- 统一查询接口
+- 便于建立关系网络
+- 减少表关联复杂度
+
+**实现**：
+```python
+# 创建角色
+character = Character(
+    project_id=project_id,
+    name="李明轩",
+    is_organization=False,  # 标记为角色
+    role_type="protagonist"
+)
+
+# 创建组织
+organization_char = Character(
+    project_id=project_id,
+    name="天剑门",
+    is_organization=True,   # 标记为组织
+    organization_type="武林门派"
+)
+```
+
+### 8.2 MCP工具增强
+
+角色生成支持MCP工具调用，可以搜索参考资料：
+
+```python
+result = await user_ai_service.generate_text_with_mcp(
+    prompt=prompt,
+    enable_mcp=True,
+    max_tool_rounds=2
+)
+```
+
+**应用场景**：
+- 搜索历史人物原型
+- 查找性格特征参考
+- 获取背景设定灵感
+- 丰富角色细节
+
+### 8.3 自动关系网络
+
+AI生成时自动建立角色关系和组织成员关系：
+
+```python
+# AI返回的关系数据
+"relationships": [
+  {
+    "target_character_name": "李天行",
+    "relationship_type": "父亲",
+    "intimacy_level": 40
+  }
+]
+
+# 自动创建CharacterRelationship记录
+# 自动创建OrganizationMember记录
+```
+
+### 8.4 流式进度反馈
+
+使用SSE提供实时进度反馈，提升用户体验：
+
+```
+0%   → 开始生成角色
+10%  → 获取项目上下文
+20%  → 构建AI提示词
+30%  → 调用AI服务
+60%  → 解析AI响应
+75%  → 创建角色记录
+90%  → 处理关系网络
+100% → 角色生成完成
+```
+
+---
+
+## 九、总结
+
+### 9.1 核心特性
+
+1. **提示词工程精细**：详细的格式要求和内容指导
+2. **关系网络自动化**：AI生成时自动建立关系
+3. **MCP工具增强**：搜索参考资料丰富内容
+4. **上下文一致性**：基于项目世界观生成
+5. **流式进度反馈**：实时显示生成进度
+6. **统一数据模型**：角色和组织使用同一表
+
+### 9.2 技术优势
+
+- **结构化输出**：明确的JSON schema减少解析错误
+- **防止幻觉**：只引用已存在的实体
+- **字数控制**：确保内容质量和详细度
+- **格式约束**：禁止干扰项，提高解析成功率
+- **关系验证**：自动验证和创建关系记录
+
+### 9.3 应用价值
+
+这套AI生成系统为小说创作提供了强大的辅助功能：
+
+1. **快速构建角色**：几秒钟生成完整角色卡
+2. **自动关系网络**：AI自动建立角色间关系
+3. **世界观一致**：基于项目设定生成内容
+4. **组织势力管理**：完整的组织/势力系统
+5. **可扩展性强**：支持MCP工具扩展
+
+---
+
+## 附录
+
+### A. 相关文件清单
+
+```
+backend/app/
+├── api/
+│   ├── characters.py              # 角色生成API（约800行）
+│   └── organizations.py           # 组织生成API（约600行）
+├── services/
+│   ├── prompt_service.py          # 提示词服务（约1300行）
+│   └── ai_service.py              # AI调用服务
+├── models/
+│   ├── character.py               # 角色模型
+│   └── relationship.py            # 关系/组织模型
+└── schemas/
+    ├── character.py               # 角色Schema
+    └── relationship.py            # 关系Schema
+```
+
+### B. 关键常量
+
+```python
+# 角色定位
+ROLE_TYPES = ["protagonist", "supporting", "antagonist"]
+
+# 关系类型
+RELATIONSHIP_TYPES = [
+    "父亲", "母亲", "兄弟", "姐妹", "子女", "配偶", "恋人",
+    "师父", "徒弟", "朋友", "同学", "同事", "邻居", "知己",
+    "上司", "下属", "合作伙伴",
+    "敌人", "仇人", "竞争对手", "宿敌"
+]
+
+# 数值范围
+INTIMACY_LEVEL_RANGE = (-100, 100)  # 亲密度
+LOYALTY_RANGE = (0, 100)            # 忠诚度
+POWER_LEVEL_RANGE = (0, 100)        # 势力等级
+```
+
+### C. 参考资源
+
+- [提示词工程最佳实践](https://platform.openai.com/docs/guides/prompt-engineering)
+- [JSON Schema规范](https://json-schema.org/)
+- [Server-Sent Events规范](https://html.spec.whatwg.org/multipage/server-sent-events.html)
+- [MCP协议文档](https://modelcontextprotocol.io/)
+
+---
+
+**文档版本**: v1.0  
+**最后更新**: 2024-01-15  
+**维护者**: MuMuAINovel开发团队

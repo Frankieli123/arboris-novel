@@ -188,6 +188,47 @@ async def generate_chapter(
     rag_summaries_text = "\n".join(rag_context.summary_lines()) if rag_context.summaries else "未检索到章节摘要"
     writing_notes = request.writing_notes or "无额外写作指令"
 
+    mcp_reference_materials = ""
+    try:
+        planning_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一名资深小说写作助手，可以使用外部工具（MCP 插件）检索资料，"
+                    "为后续章节写作提供真实、详细的背景信息。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"现在需要为小说项目生成第 {request.chapter_number} 章。\n\n"
+                    f"[世界蓝图]\n{blueprint_text}\n\n"
+                    f"[上一章摘要]\n{previous_summary_text}\n\n"
+                    f"[检索到的剧情上下文]\n{rag_chunks_text}\n\n"
+                    f"[检索到的章节摘要]\n{rag_summaries_text}\n\n"
+                    "请分析这些信息，并在需要时调用可用的工具检索 1-3 条最有价值的背景资料，"
+                    "并整理为供写作使用的参考笔记，不要直接写章节正文。"
+                ),
+            },
+        ]
+        planning_text = await llm_service.generate_text_with_mcp(
+            messages=planning_messages,
+            user_id=current_user.id,
+            temperature=0.5,
+            timeout=300.0,
+        )
+        mcp_reference_materials = planning_text or ""
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "项目 %s 第 %s 章 MCP 参考资料阶段失败，将使用普通模式写作: %s",
+            project_id,
+            request.chapter_number,
+            exc,
+        )
+        mcp_reference_materials = ""
+
     prompt_sections = [
         ("[世界蓝图](JSON)", blueprint_text),
         # ("[前情摘要]", completed_section),
@@ -200,6 +241,8 @@ async def generate_chapter(
             f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}",
         ),
     ]
+    if mcp_reference_materials:
+        prompt_sections.append(("[MCP 参考资料]", mcp_reference_materials))
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
     logger.debug("章节写作提示词：%s\n%s", writer_prompt, prompt_input)
     async def _generate_single_version(idx: int) -> Dict:
@@ -209,10 +252,10 @@ async def generate_chapter(
                 {"role": "system", "content": writer_prompt},
                 {"role": "user", "content": prompt_input}
             ]
-            response = await llm_service.generate_text_with_mcp(
+            response = await llm_service.generate_text(
                 messages=messages,
-                user_id=current_user.id,
                 temperature=0.9,
+                user_id=current_user.id,
                 timeout=600.0,
             )
             cleaned = remove_think_tags(response)
@@ -453,6 +496,43 @@ async def generate_chapter_outline(
     project_schema = await novel_service.get_project_schema(project_id, current_user.id)
     blueprint_dict = project_schema.blueprint.model_dump()
 
+    mcp_reference_materials = ""
+    try:
+        planning_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一名资深剧情策划助手，可以使用外部工具（MCP 插件）检索资料，"
+                    "帮助设计更合理、更有张力的章节大纲。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"现在需要为小说项目生成章节大纲，起始章节为 {request.start_chapter}，连续 {request.num_chapters} 章。\n\n"
+                    f"[世界蓝图]\n{json.dumps(blueprint_dict, ensure_ascii=False, indent=2)}\n\n"
+                    "请在需要时调用可用的工具，检索与题材、时代背景、场景、情节结构相关的 1-3 条关键资料，"
+                    "并整理成供大纲设计使用的参考说明，不要直接给出最终章节大纲 JSON。"
+                ),
+            },
+        ]
+        planning_text = await llm_service.generate_text_with_mcp(
+            messages=planning_messages,
+            user_id=current_user.id,
+            temperature=0.5,
+            timeout=300.0,
+        )
+        mcp_reference_materials = planning_text or ""
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "项目 %s 章节大纲 MCP 参考资料阶段失败，将使用普通模式生成: %s",
+            project_id,
+            exc,
+        )
+        mcp_reference_materials = ""
+
     payload = {
         "novel_blueprint": blueprint_dict,
         "wait_to_generate": {
@@ -460,16 +540,18 @@ async def generate_chapter_outline(
             "num_chapters": request.num_chapters,
         },
     }
+    if mcp_reference_materials:
+        payload["mcp_references"] = mcp_reference_materials
 
     # 使用 MCP 工具支持的生成方法
     messages = [
         {"role": "system", "content": outline_prompt},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     ]
-    response = await llm_service.generate_text_with_mcp(
+    response = await llm_service.generate_text(
         messages=messages,
-        user_id=current_user.id,
         temperature=0.7,
+        user_id=current_user.id,
         timeout=360.0,
     )
     normalized = unwrap_markdown_json(remove_think_tags(response))

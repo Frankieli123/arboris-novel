@@ -192,6 +192,23 @@ class LLMService:
         )
         return full_response
 
+    async def generate_text(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        user_id: Optional[int] = None,
+        timeout: float = 300.0,
+        response_format: Optional[str] = None,
+    ) -> str:
+        return await self._stream_and_collect(
+            messages,
+            temperature=temperature,
+            user_id=user_id,
+            timeout=timeout,
+            response_format=response_format,
+        )
+
     async def generate_with_mcp(
         self,
         prompt: str,

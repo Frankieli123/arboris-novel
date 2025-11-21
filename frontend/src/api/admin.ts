@@ -338,7 +338,9 @@ export class AdminAPI {
     errors: string[]
     summary: string
   }> {
-    return this.request('/mcp/plugins/import', {
+    // 后端导入路由在通用 MCP 模块下: POST /api/mcp/plugins/import
+    // 这里直接用全局 request，而不是 adminRequest
+    return request(`${API_BASE_URL}/api/mcp/plugins/import`, {
       method: 'POST',
       body: JSON.stringify(mcpConfig)
     })

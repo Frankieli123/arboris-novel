@@ -394,6 +394,7 @@ const categoryOptions = [
   { label: '搜索类 (Search) - 网络搜索、信息查询', value: 'search' },
   { label: '文件系统 (Filesystem) - 文件读写、目录操作', value: 'filesystem' },
   { label: '数据库 (Database) - 数据查询、数据管理', value: 'database' },
+  { label: '分析类 (Analysis) - 数据分析 / 文本处理', value: 'analysis' },
   { label: 'API集成 (API) - 第三方服务调用', value: 'api' },
   { label: '工具类 (Tools) - 实用工具、辅助功能', value: 'tools' },
   { label: '其他 (Other)', value: 'other' }

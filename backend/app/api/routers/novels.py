@@ -5,7 +5,7 @@ from typing import Dict, List
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...core.dependencies import get_current_user
+from ...core.dependencies import get_current_user, get_mcp_registry
 from ...db.session import get_session
 from ...schemas.novel import (
     Blueprint,
@@ -22,7 +22,9 @@ from ...schemas.novel import (
     NovelSectionType,
 )
 from ...schemas.user import UserInDB
+from ...mcp.registry import MCPPluginRegistry
 from ...services.llm_service import LLMService
+from ...services.mcp_tool_service import MCPToolService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
 from ...utils.json_utils import remove_think_tags, sanitize_json_like_text, unwrap_markdown_json
@@ -204,11 +206,15 @@ async def generate_blueprint(
     project_id: str,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    mcp_registry: MCPPluginRegistry = Depends(get_mcp_registry),
 ) -> BlueprintGenerationResponse:
     """根据完整对话生成可执行的小说蓝图。"""
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
-    llm_service = LLMService(session)
+
+    # 初始化 MCP 工具服务和支持 MCP 的 LLM 服务
+    mcp_tool_service = MCPToolService(session, mcp_registry)
+    llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info("项目 %s 开始生成蓝图", project_id)
@@ -245,10 +251,61 @@ async def generate_blueprint(
             detail="无法从历史对话中提取有效内容，请检查对话历史格式或重新进行概念对话"
         )
 
+    # 第一阶段：使用 MCP 工具进行资料/规划阶段
+    mcp_reference_text = ""
+    try:
+        planning_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一名资深小说策划与世界观设计顾问，可以调用外部 MCP 插件检索资料，"
+                    "为后续的完整小说蓝图设计提供真实、系统的参考信息。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "下面是我们之前关于这部小说的概念对话内容，请先通读这些信息，"
+                    "在需要时调用可用的工具，检索与题材、时代背景、世界观设定、人物关系、剧情结构等相关的 1-3 条高价值资料，"
+                    "并整理成供蓝图编写使用的参考说明，不要直接输出最终蓝图 JSON。\n\n"
+                    + "\n".join(f"[{item['role']}]: {item['content']}" for item in formatted_history)
+                ),
+            },
+        ]
+        mcp_reference_text = await llm_service.generate_text_with_mcp(
+            messages=planning_messages,
+            user_id=current_user.id,
+            temperature=0.5,
+            timeout=360.0,
+        )
+        mcp_reference_text = mcp_reference_text or ""
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "项目 %s 蓝图 MCP 规划阶段失败，将在无 MCP 参考资料的情况下生成蓝图: %s",
+            project_id,
+            exc,
+        )
+        mcp_reference_text = ""
+
+    # 第二阶段：在 screenwriting 提示 + 对话历史基础上（可选地）附加 MCP 参考资料，生成最终蓝图
     system_prompt = _ensure_prompt(await prompt_service.get_prompt("screenwriting"), "screenwriting")
+
+    conversation_for_blueprint = list(formatted_history)
+    if mcp_reference_text:
+        conversation_for_blueprint.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "[MCP 参考资料]\n" + mcp_reference_text
+                ),
+            }
+        )
+
     blueprint_raw = await llm_service.get_llm_response(
         system_prompt=system_prompt,
-        conversation_history=formatted_history,
+        conversation_history=conversation_for_blueprint,
         temperature=0.3,
         user_id=current_user.id,
         timeout=480.0,
