@@ -196,10 +196,17 @@ export class NovelAPI {
     })
   }
 
-  static async generateChapter(projectId: string, chapterNumber: number): Promise<NovelProject> {
+  static async generateChapter(
+    projectId: string,
+    chapterNumber: number,
+    enableMcp: boolean = true
+  ): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/generate`, {
       method: 'POST',
-      body: JSON.stringify({ chapter_number: chapterNumber })
+      body: JSON.stringify({
+        chapter_number: chapterNumber,
+        enable_mcp: enableMcp
+      })
     })
   }
 

@@ -548,10 +548,12 @@ class TestMCPPluginServiceEdgeCases:
     """Test edge cases and specific scenarios."""
     
     @pytest.mark.asyncio
-    async def test_globally_disabled_plugin_not_in_user_tools(self):
+    async def test_globally_disabled_plugin_can_be_enabled_by_user(self):
         """
-        Test that globally disabled plugins don't appear in user tools
-        even if user has enabled them.
+        Test that globally disabled plugins CAN appear in user tools
+        if user explicitly enables them via preference.
+        
+        This tests that user preferences override global defaults.
         """
         async with DatabaseContext() as test_db:
             mock_registry = create_mock_registry()
@@ -564,12 +566,12 @@ class TestMCPPluginServiceEdgeCases:
                 "plugin_name": "disabled-plugin",
                 "display_name": "Disabled Plugin",
                 "server_url": "http://disabled.com",
-                "enabled": False  # Globally disabled
+                "enabled": False  # Globally disabled by default
             }
             plugin_create = MCPPluginCreate(**plugin_data)
             plugin = await service.create_plugin(plugin_create)
             
-            # User enables it (but it's globally disabled)
+            # User explicitly enables it via preference
             await service.toggle_user_plugin(1, plugin.id, True)
             
             # Mock tool
@@ -582,9 +584,9 @@ class TestMCPPluginServiceEdgeCases:
             # Get user tools
             tools = await tool_service.get_user_enabled_tools(1)
             
-            # Should be empty because plugin is globally disabled
-            assert len(tools) == 0, \
-                "Globally disabled plugin should not contribute tools"
+            # Should have tools because user explicitly enabled it
+            assert len(tools) == 1, \
+                "User preference should override global disabled state"
     
     @pytest.mark.asyncio
     async def test_user_with_no_preferences_gets_no_tools(self):

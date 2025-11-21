@@ -32,6 +32,8 @@ from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
 from ...services.update_log_service import UpdateLogService
 from ...services.user_service import UserService
+from ...services.mcp_plugin_service import MCPPluginService
+from ...schemas.mcp_plugin import MCPPluginCreate, MCPPluginResponse, MCPPluginUpdate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -63,6 +65,10 @@ def get_user_service(session: AsyncSession = Depends(get_session)) -> UserServic
 
 def get_auth_service(session: AsyncSession = Depends(get_session)) -> AuthService:
     return AuthService(session)
+
+
+def get_mcp_plugin_service(session: AsyncSession = Depends(get_session)) -> MCPPluginService:
+    return MCPPluginService(session)
 
 
 @router.get("/stats", response_model=Statistics)
@@ -338,3 +344,84 @@ async def change_password(
 ) -> None:
     await service.change_password(current_admin.username, payload.old_password, payload.new_password)
     logger.info("管理员 %s 修改密码", current_admin.username)
+
+
+# MCP 插件管理端点
+
+@router.get("/mcp/plugins", response_model=List[MCPPluginResponse])
+async def list_default_mcp_plugins(
+    _: None = Depends(get_current_admin),
+    service: MCPPluginService = Depends(get_mcp_plugin_service),
+) -> List[MCPPluginResponse]:
+    """列出所有默认 MCP 插件（仅管理员）。
+    
+    默认插件对所有用户生效。
+    """
+    plugins = await service.list_default_plugins()
+    logger.info("管理员查询默认 MCP 插件列表，共 %s 个", len(plugins))
+    return plugins
+
+
+@router.post("/mcp/plugins", response_model=MCPPluginResponse, status_code=status.HTTP_201_CREATED)
+async def create_default_mcp_plugin(
+    plugin_data: MCPPluginCreate,
+    _: None = Depends(get_current_admin),
+    service: MCPPluginService = Depends(get_mcp_plugin_service),
+) -> MCPPluginResponse:
+    """创建默认 MCP 插件（仅管理员）。
+    
+    默认插件对所有用户生效。
+    
+    Raises:
+        HTTPException: 400 - JSON 配置格式错误
+        HTTPException: 409 - 插件名称冲突
+    """
+    try:
+        plugin = await service.create_default_plugin(plugin_data)
+        logger.info("管理员创建默认 MCP 插件：%s", plugin.plugin_name)
+        return MCPPluginResponse.model_validate(plugin)
+    except ValueError as e:
+        # JSON 验证错误（由 Pydantic validator 抛出）
+        logger.warning("创建默认插件失败，JSON 配置错误: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"配置格式错误: {str(e)}"
+        )
+    # HTTPException (包括 409 冲突) 会自动传播，不需要额外处理
+
+
+@router.put("/mcp/plugins/{plugin_id}", response_model=MCPPluginResponse)
+async def update_default_mcp_plugin(
+    plugin_id: int,
+    plugin_data: MCPPluginUpdate,
+    _: None = Depends(get_current_admin),
+    service: MCPPluginService = Depends(get_mcp_plugin_service),
+) -> MCPPluginResponse:
+    """更新默认 MCP 插件（仅管理员）。
+    
+    Raises:
+        HTTPException: 400 - JSON 配置格式错误
+        HTTPException: 404 - 插件不存在
+    """
+    try:
+        plugin = await service.update_plugin(plugin_id, plugin_data)
+        logger.info("管理员更新默认 MCP 插件：%s", plugin.plugin_name)
+        return MCPPluginResponse.model_validate(plugin)
+    except ValueError as e:
+        # JSON 验证错误
+        logger.warning("更新默认插件失败，JSON 配置错误: plugin_id=%s error=%s", plugin_id, str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"配置格式错误: {str(e)}"
+        )
+
+
+@router.delete("/mcp/plugins/{plugin_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_default_mcp_plugin(
+    plugin_id: int,
+    _: None = Depends(get_current_admin),
+    service: MCPPluginService = Depends(get_mcp_plugin_service),
+) -> None:
+    """删除默认 MCP 插件（仅管理员）。"""
+    await service.delete_plugin(plugin_id)
+    logger.info("管理员删除默认 MCP 插件：%s", plugin_id)

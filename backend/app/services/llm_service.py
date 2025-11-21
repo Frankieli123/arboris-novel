@@ -192,6 +192,180 @@ class LLMService:
         )
         return full_response
 
+    async def generate_with_mcp(
+        self,
+        prompt: str,
+        user_id: int,
+        *,
+        enable_mcp: bool = True,
+        max_tool_rounds: int = 3,
+        tool_choice: str = "auto",
+        temperature: float = 0.7,
+        timeout: float = 300.0,
+    ) -> Dict[str, Any]:
+        """
+        使用 MCP 工具增强的文本生成
+        
+        Args:
+            prompt: 生成提示词
+            user_id: 用户 ID
+            enable_mcp: 是否启用 MCP 工具
+            max_tool_rounds: 最大工具调用轮次
+            tool_choice: 工具选择策略（auto/required/none）
+            temperature: 温度参数
+            timeout: 超时时间
+            
+        Returns:
+            {
+                "content": "生成的文本",
+                "tool_calls_made": 2,
+                "tools_used": ["plugin.tool1", "plugin.tool2"],
+                "finish_reason": "stop",
+                "mcp_enhanced": True
+            }
+        """
+        # 初始化结果
+        result = {
+            "content": "",
+            "tool_calls_made": 0,
+            "tools_used": [],
+            "finish_reason": "",
+            "mcp_enhanced": False
+        }
+        
+        # 1. 获取 MCP 工具（如果启用）
+        tools = None
+        if enable_mcp and self.mcp_tool_service:
+            try:
+                tools = await self.mcp_tool_service.get_user_enabled_tools(user_id)
+                if tools:
+                    logger.info(f"MCP 增强: 用户 {user_id} 加载了 {len(tools)} 个工具")
+                    result["mcp_enhanced"] = True
+                else:
+                    logger.info(f"用户 {user_id} 未启用任何 MCP 工具，使用普通生成模式")
+            except Exception as e:
+                logger.error(
+                    f"获取 MCP 工具失败，降级为普通生成: user_id={user_id} error={str(e)}",
+                    exc_info=True
+                )
+                tools = None
+        
+        # 2. 如果没有工具，直接使用普通生成
+        if not tools:
+            content = await self._stream_and_collect(
+                [{"role": "user", "content": prompt}],
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=None
+            )
+            result["content"] = content
+            result["finish_reason"] = "stop"
+            return result
+        
+        # 3. 工具调用循环
+        conversation_history = [{"role": "user", "content": prompt}]
+        
+        for round_num in range(max_tool_rounds):
+            logger.info(f"MCP 工具调用轮次: {round_num + 1}/{max_tool_rounds}")
+            
+            # 调用 AI（第一轮传递工具列表）
+            ai_response = await self._call_llm_with_tools(
+                conversation_history,
+                tools=tools if round_num == 0 else None,
+                tool_choice=tool_choice if round_num == 0 else None,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout
+            )
+            
+            # 检查是否有工具调用
+            tool_calls = ai_response.get("tool_calls", [])
+            
+            if not tool_calls:
+                # AI 返回最终内容
+                result["content"] = ai_response.get("content", "")
+                result["finish_reason"] = ai_response.get("finish_reason", "stop")
+                break
+            
+            # 4. 执行工具调用
+            logger.info(f"AI 请求调用 {len(tool_calls)} 个工具: user_id={user_id} round={round_num + 1}")
+            
+            try:
+                tool_results = await self.mcp_tool_service.execute_tool_calls(
+                    user_id, tool_calls
+                )
+                
+                # 检查是否所有工具调用都失败
+                all_failed = all(not r.get("success", False) for r in tool_results)
+                if all_failed:
+                    logger.warning(
+                        f"所有工具调用都失败，降级为普通生成模式: user_id={user_id} "
+                        f"failed_tools={[r.get('name') for r in tool_results]}"
+                    )
+                    content = await self._stream_and_collect(
+                        [{"role": "user", "content": prompt}],
+                        temperature=temperature,
+                        user_id=user_id,
+                        timeout=timeout,
+                        response_format=None
+                    )
+                    result["content"] = content
+                    result["finish_reason"] = "stop"
+                    # Keep mcp_enhanced = True because tools were available (just failed)
+                    break
+                
+                # 记录使用的工具
+                for tool_call in tool_calls:
+                    tool_name = tool_call["function"]["name"]
+                    if tool_name not in result["tools_used"]:
+                        result["tools_used"].append(tool_name)
+                
+                result["tool_calls_made"] += len(tool_calls)
+                
+                # 记录成功和失败的工具
+                success_count = sum(1 for r in tool_results if r.get("success", False))
+                logger.info(
+                    f"工具调用完成: user_id={user_id} success={success_count}/{len(tool_results)}"
+                )
+                
+                # 5. 更新对话历史
+                conversation_history.append({
+                    "role": "assistant",
+                    "content": ai_response.get("content", ""),
+                    "tool_calls": tool_calls
+                })
+                
+                # 添加工具结果
+                for tool_result in tool_results:
+                    conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_result["tool_call_id"],
+                        "name": tool_result["name"],
+                        "content": tool_result["content"]
+                    })
+                
+            except Exception as e:
+                logger.error(
+                    f"工具调用执行失败，降级为普通生成: user_id={user_id} "
+                    f"error={str(e)} round={round_num + 1}",
+                    exc_info=True
+                )
+                # 降级为普通生成
+                content = await self._stream_and_collect(
+                    [{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    user_id=user_id,
+                    timeout=timeout,
+                    response_format=None
+                )
+                result["content"] = content
+                result["finish_reason"] = "stop"
+                # Keep mcp_enhanced = True because tools were available (just failed)
+                break
+        
+        return result
+
     async def generate_text_with_mcp(
         self,
         messages: List[Dict[str, str]],
@@ -236,7 +410,12 @@ class LLMService:
             tools = await self.mcp_tool_service.get_user_enabled_tools(user_id)
             logger.info("用户 %d 启用了 %d 个 MCP 工具", user_id, len(tools))
         except Exception as exc:
-            logger.error("获取用户 MCP 工具失败: %s，降级为普通生成模式", exc)
+            logger.error(
+                "获取用户 MCP 工具失败，降级为普通生成模式: user_id=%d error=%s",
+                user_id,
+                str(exc),
+                exc_info=True
+            )
             return await self._stream_and_collect(
                 messages,
                 temperature=temperature,
@@ -266,7 +445,12 @@ class LLMService:
                 timeout=timeout
             )
         except Exception as exc:
-            logger.error("第一轮 AI 调用失败: %s，降级为普通生成模式", exc)
+            logger.error(
+                "第一轮 AI 调用失败，降级为普通生成模式: user_id=%d error=%s",
+                user_id,
+                str(exc),
+                exc_info=True
+            )
             return await self._stream_and_collect(
                 messages,
                 temperature=temperature,
@@ -288,11 +472,21 @@ class LLMService:
         # 执行工具调用
         try:
             tool_results = await self.mcp_tool_service.execute_tool_calls(user_id, tool_calls)
-            logger.info("工具调用完成，成功: %d/%d",
-                       sum(1 for r in tool_results if r.get("success")),
-                       len(tool_results))
+            success_count = sum(1 for r in tool_results if r.get("success"))
+            logger.info(
+                "工具调用完成: user_id=%d success=%d/%d tools=%s",
+                user_id,
+                success_count,
+                len(tool_results),
+                [r.get("name") for r in tool_results]
+            )
         except Exception as exc:
-            logger.error("工具调用执行失败: %s，降级为普通生成模式", exc)
+            logger.error(
+                "工具调用执行失败，降级为普通生成模式: user_id=%d error=%s",
+                user_id,
+                str(exc),
+                exc_info=True
+            )
             return await self._stream_and_collect(
                 messages,
                 temperature=temperature,
@@ -304,7 +498,11 @@ class LLMService:
         # 检查是否所有工具调用都失败
         all_failed = all(not r.get("success", False) for r in tool_results)
         if all_failed:
-            logger.warning("所有工具调用都失败，降级为普通生成模式")
+            logger.warning(
+                "所有工具调用都失败，降级为普通生成模式: user_id=%d failed_tools=%s",
+                user_id,
+                [r.get("name") for r in tool_results]
+            )
             return await self._stream_and_collect(
                 messages,
                 temperature=temperature,
@@ -339,17 +537,27 @@ class LLMService:
                 timeout=timeout,
                 response_format=None
             )
-            logger.info("第二轮 AI 调用成功，生成内容长度: %d", len(final_content))
+            logger.info(
+                "第二轮 AI 调用成功: user_id=%d content_length=%d",
+                user_id,
+                len(final_content)
+            )
             return final_content
         except Exception as exc:
-            logger.error("第二轮 AI 调用失败: %s", exc)
+            logger.error(
+                "第二轮 AI 调用失败: user_id=%d error=%s",
+                user_id,
+                str(exc),
+                exc_info=True
+            )
             raise
     
     async def _call_llm_with_tools(
         self,
         messages: List[Dict[str, str]],
-        tools: List[Dict[str, Any]],
         *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         temperature: float,
         user_id: Optional[int],
         timeout: float,
@@ -358,7 +566,8 @@ class LLMService:
         
         Args:
             messages: 对话消息列表
-            tools: OpenAI Function Calling 格式的工具列表
+            tools: OpenAI Function Calling 格式的工具列表（可选）
+            tool_choice: 工具选择策略（可选）
             temperature: 温度参数
             user_id: 用户 ID
             timeout: 超时时间
@@ -374,14 +583,22 @@ class LLMService:
             base_url=config.get("base_url")
         )
         
+        # 构建请求参数
+        request_params = {
+            "model": config.get("model") or "gpt-3.5-turbo",
+            "messages": messages,
+            "temperature": temperature,
+            "timeout": timeout
+        }
+        
+        # 只在提供工具时添加 tools 和 tool_choice 参数
+        if tools:
+            request_params["tools"] = tools
+            if tool_choice:
+                request_params["tool_choice"] = tool_choice
+        
         try:
-            response = await client.chat.completions.create(
-                model=config.get("model") or "gpt-3.5-turbo",
-                messages=messages,
-                tools=tools,
-                temperature=temperature,
-                timeout=timeout
-            )
+            response = await client.chat.completions.create(**request_params)
             
             choice = response.choices[0]
             message = choice.message

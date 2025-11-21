@@ -1,7 +1,8 @@
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class MCPPluginBase(BaseModel):
@@ -20,7 +21,32 @@ class MCPPluginBase(BaseModel):
 class MCPPluginCreate(MCPPluginBase):
     """创建插件时使用的模型。"""
 
-    pass
+    @field_validator("headers", "config")
+    @classmethod
+    def validate_json_fields(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """验证 JSON 字段格式。
+        
+        确保 headers 和 config 字段是有效的字典类型。
+        如果传入字符串，尝试解析为 JSON。
+        """
+        if v is None:
+            return None
+        
+        # 如果已经是字典，直接返回
+        if isinstance(v, dict):
+            return v
+        
+        # 如果是字符串，尝试解析
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if not isinstance(parsed, dict):
+                    raise ValueError("JSON 必须是对象类型（字典）")
+                return parsed
+            except json.JSONDecodeError as e:
+                raise ValueError(f"无效的 JSON 格式: {str(e)}")
+        
+        raise ValueError(f"字段必须是字典或有效的 JSON 字符串，收到类型: {type(v).__name__}")
 
 
 class MCPPluginUpdate(BaseModel):
@@ -33,11 +59,39 @@ class MCPPluginUpdate(BaseModel):
     category: Optional[str] = Field(default=None, description="插件分类")
     config: Optional[Dict[str, Any]] = Field(default=None, description="额外配置")
 
+    @field_validator("headers", "config")
+    @classmethod
+    def validate_json_fields(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """验证 JSON 字段格式。
+        
+        确保 headers 和 config 字段是有效的字典类型。
+        如果传入字符串，尝试解析为 JSON。
+        """
+        if v is None:
+            return None
+        
+        # 如果已经是字典，直接返回
+        if isinstance(v, dict):
+            return v
+        
+        # 如果是字符串，尝试解析
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if not isinstance(parsed, dict):
+                    raise ValueError("JSON 必须是对象类型（字典）")
+                return parsed
+            except json.JSONDecodeError as e:
+                raise ValueError(f"无效的 JSON 格式: {str(e)}")
+        
+        raise ValueError(f"字段必须是字典或有效的 JSON 字符串，收到类型: {type(v).__name__}")
+
 
 class MCPPluginResponse(MCPPluginBase):
     """对外暴露的插件信息。"""
 
     id: int = Field(..., description="插件 ID")
+    is_default: bool = Field(default=False, description="是否为默认插件")
     user_enabled: Optional[bool] = Field(default=None, description="用户级别的启用状态")
     created_at: datetime = Field(..., description="创建时间")
     updated_at: datetime = Field(..., description="更新时间")

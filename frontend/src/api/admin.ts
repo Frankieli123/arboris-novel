@@ -137,6 +137,43 @@ export interface SystemConfigUpsertPayload {
 
 export type SystemConfigUpdatePayload = Partial<SystemConfigUpsertPayload>
 
+// MCP Plugin types
+export interface MCPPlugin {
+  id: number
+  plugin_name: string
+  display_name: string
+  plugin_type: string
+  server_url: string
+  headers?: Record<string, string> | null
+  enabled: boolean
+  category?: string | null
+  config?: Record<string, any> | null
+  is_default?: boolean
+  user_enabled?: boolean | null
+  created_at: string
+  updated_at?: string
+}
+
+export interface MCPPluginCreate {
+  plugin_name: string
+  display_name: string
+  plugin_type?: string
+  server_url: string
+  headers?: Record<string, string> | null
+  enabled?: boolean
+  category?: string | null
+  config?: Record<string, any> | null
+}
+
+export interface MCPPluginUpdate {
+  display_name?: string
+  server_url?: string
+  headers?: Record<string, string> | null
+  enabled?: boolean
+  category?: string | null
+  config?: Record<string, any> | null
+}
+
 export class AdminAPI {
   private static request(path: string, options: RequestInit = {}) {
     return adminRequest(path, options)
@@ -266,6 +303,31 @@ export class AdminAPI {
         old_password: oldPassword,
         new_password: newPassword
       })
+    })
+  }
+
+  // MCP Plugin Management (Admin only)
+  static listDefaultMCPPlugins(): Promise<MCPPlugin[]> {
+    return this.request('/mcp/plugins')
+  }
+
+  static createDefaultMCPPlugin(payload: MCPPluginCreate): Promise<MCPPlugin> {
+    return this.request('/mcp/plugins', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  static updateDefaultMCPPlugin(pluginId: number, payload: MCPPluginUpdate): Promise<MCPPlugin> {
+    return this.request(`/mcp/plugins/${pluginId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  static deleteDefaultMCPPlugin(pluginId: number): Promise<void> {
+    return this.request(`/mcp/plugins/${pluginId}`, {
+      method: 'DELETE'
     })
   }
 }

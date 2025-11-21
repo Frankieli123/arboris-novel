@@ -26,6 +26,22 @@
 
         <!-- 右侧：操作按钮 -->
         <div class="flex items-center gap-1 sm:gap-2">
+          <!-- MCP 增强开关 -->
+          <div class="flex items-center gap-2 px-2 sm:px-3 py-1 bg-gray-50 rounded-lg border border-gray-200">
+            <svg class="w-4 h-4 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 5.757a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464A1 1 0 106.464 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zM5 10a1 1 0 01-1 1H3a1 1 0 110-2h1a1 1 0 011 1zM8 16v-1h4v1a2 2 0 11-4 0zM12 14c.015-.34.208-.646.477-.859a4 4 0 10-4.954 0c.27.213.462.519.476.859h4.002z"></path>
+            </svg>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                :checked="enableMcp"
+                @change="$emit('update:enableMcp', ($event.target as HTMLInputElement).checked)"
+                class="w-4 h-4 text-indigo-600 bg-gray-100 border-gray-300 rounded focus:ring-indigo-500 focus:ring-2"
+              />
+              <span class="hidden sm:inline text-xs font-medium text-gray-700">MCP 增强</span>
+            </label>
+          </div>
+          <div class="w-px h-6 bg-gray-300 hidden sm:block"></div>
           <button
             @click="$emit('viewProjectDetail')"
             class="p-2 sm:px-3 sm:py-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors flex items-center gap-2"
@@ -78,9 +94,10 @@ interface Props {
   progress: number
   completedChapters: number
   totalChapters: number
+  enableMcp: boolean
 }
 
 defineProps<Props>()
 
-defineEmits(['goBack', 'viewProjectDetail', 'toggleSidebar'])
+defineEmits(['goBack', 'viewProjectDetail', 'toggleSidebar', 'update:enableMcp'])
 </script>

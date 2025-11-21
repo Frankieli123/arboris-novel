@@ -5,9 +5,11 @@
       :progress="progress"
       :completed-chapters="completedChapters"
       :total-chapters="totalChapters"
+      :enable-mcp="enableMcp"
       @go-back="goBack"
       @view-project-detail="viewProjectDetail"
       @toggle-sidebar="toggleSidebar"
+      @update:enable-mcp="enableMcp = $event"
     />
 
     <!-- 主要内容区域 -->
@@ -142,6 +144,7 @@ const showEditChapterModal = ref(false)
 const editingChapter = ref<ChapterOutline | null>(null)
 const isGeneratingOutline = ref(false)
 const showGenerateOutlineModal = ref(false)
+const enableMcp = ref(true) // MCP 增强开关，默认启用
 
 // 计算属性
 const project = computed(() => novelStore.currentProject)
@@ -407,7 +410,7 @@ const generateChapter = async (chapterNumber: number) => {
       }
     }
 
-    await novelStore.generateChapter(chapterNumber)
+    await novelStore.generateChapter(chapterNumber, enableMcp.value)
     
     // store 中的 project 已经被更新，所以我们不需要手动修改本地状态
     // chapterGenerationResult 也不再需要，因为 availableVersions 会从更新后的 project.chapters 中获取数据

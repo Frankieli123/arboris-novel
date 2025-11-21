@@ -143,14 +143,14 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
-  async function generateChapter(chapterNumber: number): Promise<NovelProject> {
+  async function generateChapter(chapterNumber: number, enableMcp: boolean = true): Promise<NovelProject> {
     // 注意：这里不设置全局 isLoading，因为 WritingDesk.vue 有自己的局部加载状态
     error.value = null
     try {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
-      const updatedProject = await NovelAPI.generateChapter(currentProject.value.id, chapterNumber)
+      const updatedProject = await NovelAPI.generateChapter(currentProject.value.id, chapterNumber, enableMcp)
       currentProject.value = updatedProject // 更新 store 中的当前项目
       return updatedProject
     } catch (err) {

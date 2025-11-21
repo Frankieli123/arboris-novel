@@ -10,18 +10,34 @@ from ..db.base import Base
 
 
 class MCPPlugin(Base):
-    """MCP 插件配置表，存储插件的连接信息和认证配置。"""
+    """MCP 插件配置表，存储插件的连接信息和认证配置。
+    
+    支持两种类型的插件：
+    - 默认插件：user_id = NULL，对所有用户生效
+    - 用户插件：user_id = 具体ID，仅对该用户生效
+    """
 
     __tablename__ = "mcp_plugins"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    plugin_name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    
+    # 关键字段：区分默认插件和用户插件
+    # user_id = NULL 表示默认插件（对所有用户生效）
+    # user_id = 具体ID 表示用户自定义插件
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, 
+        ForeignKey("users.id", ondelete="CASCADE"), 
+        nullable=True, 
+        index=True
+    )
+    
+    plugin_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     plugin_type: Mapped[str] = mapped_column(String(50), nullable=False, default="http")
     server_url: Mapped[str] = mapped_column(String(500), nullable=False)
     headers: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON 存储
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="general")
     config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON 存储
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -31,10 +47,18 @@ class MCPPlugin(Base):
     )
 
     # 关系映射
+    user: Mapped[Optional["User"]] = relationship("User", back_populates="mcp_plugins")
     user_preferences: Mapped[list["UserPluginPreference"]] = relationship(
         "UserPluginPreference",
         back_populates="plugin",
         cascade="all, delete-orphan"
+    )
+    
+    # 唯一约束：
+    # - 默认插件：plugin_name 全局唯一
+    # - 用户插件：(user_id, plugin_name) 组合唯一
+    __table_args__ = (
+        UniqueConstraint("user_id", "plugin_name", name="uq_user_plugin_name"),
     )
 
 

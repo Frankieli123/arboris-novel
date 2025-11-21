@@ -412,9 +412,9 @@ class TestMCPAPIRouterResponseCompleteness:
             assert response.plugin_type == "http"  # default
             assert response.enabled is True  # default
             
-            # Verify optional fields are None
+            # Verify optional fields are None or have defaults
             assert response.headers is None
-            assert response.category is None
+            assert response.category == "general"  # default per Property 9
             assert response.config is None
             
             # user_enabled should be None (no preference)

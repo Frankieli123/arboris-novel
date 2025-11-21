@@ -21,6 +21,10 @@
       </template>
 
       <n-spin :show="loading">
+        <n-alert type="info" style="margin-bottom: 16px">
+          默认插件由管理员配置，你可以启用/禁用它们，或添加自己的插件
+        </n-alert>
+
         <n-alert v-if="error" type="error" closable @close="error = null">
           {{ error }}
         </n-alert>
@@ -363,7 +367,13 @@ const columns: DataTableColumns<MCPPlugin> = [
     title: '插件名称',
     key: 'display_name',
     width: 180,
-    ellipsis: { tooltip: true }
+    ellipsis: { tooltip: true },
+    render(row) {
+      return h('span', [
+        row.display_name,
+        row.is_default ? h(NTag, { size: 'small', type: 'info', style: { marginLeft: '8px' } }, { default: () => '默认' }) : null
+      ])
+    }
   },
   {
     title: '标识符',

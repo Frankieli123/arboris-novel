@@ -14,6 +14,8 @@ from ...schemas.novel import (
     Chapter as ChapterSchema,
     ConverseRequest,
     ConverseResponse,
+    NovelGenerateRequest,
+    NovelGenerateResponse,
     NovelProject as NovelProjectSchema,
     NovelProjectSummary,
     NovelSectionResponse,
@@ -324,3 +326,47 @@ async def patch_blueprint(
     await novel_service.patch_blueprint(project_id, update_data)
     logger.info("项目 %s 局部更新蓝图字段：%s", project_id, list(update_data.keys()))
     return await novel_service.get_project_schema(project_id, current_user.id)
+
+
+@router.post("/generate", response_model=NovelGenerateResponse)
+async def generate_novel_content(
+    request: NovelGenerateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelGenerateResponse:
+    """生成小说内容（支持 MCP 增强）。
+    
+    使用 LLM 生成小说内容，可选择启用 MCP 工具来增强生成能力。
+    当 enable_mcp=True 时，系统会使用用户启用的 MCP 工具来搜索参考资料等。
+    """
+    llm_service = LLMService(session)
+    
+    logger.info(
+        "用户 %s 请求生成内容，enable_mcp=%s",
+        current_user.id,
+        request.enable_mcp
+    )
+    
+    # 使用 MCP 增强的生成
+    result = await llm_service.generate_with_mcp(
+        prompt=request.prompt,
+        user_id=current_user.id,
+        enable_mcp=request.enable_mcp,
+        temperature=request.temperature,
+        max_tool_rounds=3,
+        tool_choice="auto"
+    )
+    
+    logger.info(
+        "用户 %s 生成完成，mcp_enhanced=%s，tools_used=%s",
+        current_user.id,
+        result["mcp_enhanced"],
+        result["tools_used"]
+    )
+    
+    return NovelGenerateResponse(
+        content=result["content"],
+        mcp_enhanced=result["mcp_enhanced"],
+        tools_used=result["tools_used"],
+        tool_calls_made=result["tool_calls_made"]
+    )

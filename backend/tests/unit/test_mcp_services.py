@@ -23,6 +23,7 @@ class TestMCPPluginService:
         """Test successful plugin creation."""
         mock_session = AsyncMock()
         mock_repo = AsyncMock()
+        mock_pref_repo = AsyncMock()
         
         # Mock repository methods
         mock_repo.get_by_name.return_value = None  # No existing plugin
@@ -32,11 +33,13 @@ class TestMCPPluginService:
             display_name="Test Plugin",
             server_url="http://localhost:8000"
         )
-        mock_repo.add.return_value = mock_plugin
+        mock_repo.create_default_plugin.return_value = mock_plugin
         
-        with patch('app.services.mcp_plugin_service.MCPPluginRepository', return_value=mock_repo):
+        with patch('app.services.mcp_plugin_service.MCPPluginRepository', return_value=mock_repo), \
+             patch('app.services.mcp_plugin_service.UserPluginPreferenceRepository', return_value=mock_pref_repo):
             service = MCPPluginService(mock_session)
             service.plugin_repo = mock_repo
+            service.user_pref_repo = mock_pref_repo
             
             plugin_data = MCPPluginCreate(
                 plugin_name="test_plugin",
@@ -47,27 +50,28 @@ class TestMCPPluginService:
             result = await service.create_plugin(plugin_data)
             
             assert result.plugin_name == "test_plugin"
-            mock_repo.add.assert_called_once()
+            mock_repo.create_default_plugin.assert_called_once()
             mock_session.commit.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_create_plugin_duplicate_name(self):
         """Test that creating a plugin with duplicate name raises error."""
+        from sqlalchemy.exc import IntegrityError
+        
         mock_session = AsyncMock()
         mock_repo = AsyncMock()
+        mock_pref_repo = AsyncMock()
         
-        # Mock existing plugin
-        existing_plugin = MCPPlugin(
-            id=1,
-            plugin_name="existing",
-            display_name="Existing",
-            server_url="http://localhost:8000"
+        # Mock IntegrityError being raised by repository
+        mock_repo.create_default_plugin.side_effect = IntegrityError(
+            "UNIQUE constraint failed", None, None
         )
-        mock_repo.get_by_name.return_value = existing_plugin
         
-        with patch('app.services.mcp_plugin_service.MCPPluginRepository', return_value=mock_repo):
+        with patch('app.services.mcp_plugin_service.MCPPluginRepository', return_value=mock_repo), \
+             patch('app.services.mcp_plugin_service.UserPluginPreferenceRepository', return_value=mock_pref_repo):
             service = MCPPluginService(mock_session)
             service.plugin_repo = mock_repo
+            service.user_pref_repo = mock_pref_repo
             
             plugin_data = MCPPluginCreate(
                 plugin_name="existing",
@@ -78,7 +82,7 @@ class TestMCPPluginService:
             with pytest.raises(HTTPException) as exc_info:
                 await service.create_plugin(plugin_data)
             
-            assert exc_info.value.status_code == 400
+            assert exc_info.value.status_code == 409
             assert "已存在" in exc_info.value.detail
     
     @pytest.mark.asyncio
@@ -208,6 +212,158 @@ class TestMCPPluginService:
                 await service.toggle_user_plugin(1, 999, True)
             
             assert exc_info.value.status_code == 404
+    
+    @pytest.mark.asyncio
+    async def test_list_default_plugins(self):
+        """Test listing all default plugins."""
+        mock_session = AsyncMock()
+        mock_plugin_repo = AsyncMock()
+        mock_pref_repo = AsyncMock()
+        
+        # Mock default plugins (user_id = None)
+        default_plugins = [
+            MCPPlugin(
+                id=1,
+                user_id=None,
+                plugin_name="default1",
+                display_name="Default Plugin 1",
+                server_url="http://localhost:8001",
+                enabled=True,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            ),
+            MCPPlugin(
+                id=2,
+                user_id=None,
+                plugin_name="default2",
+                display_name="Default Plugin 2",
+                server_url="http://localhost:8002",
+                enabled=True,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+        ]
+        mock_plugin_repo.get_default_plugins.return_value = default_plugins
+        
+        with patch('app.services.mcp_plugin_service.MCPPluginRepository', return_value=mock_plugin_repo), \
+             patch('app.services.mcp_plugin_service.UserPluginPreferenceRepository', return_value=mock_pref_repo):
+            service = MCPPluginService(mock_session)
+            service.plugin_repo = mock_plugin_repo
+            service.user_pref_repo = mock_pref_repo
+            
+            result = await service.list_default_plugins()
+            
+            assert len(result) == 2
+            assert all(r.is_default for r in result)
+            assert result[0].plugin_name == "default1"
+            assert result[1].plugin_name == "default2"
+            mock_plugin_repo.get_default_plugins.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_list_plugins_with_user_status(self):
+        """Test listing plugins with user status."""
+        mock_session = AsyncMock()
+        mock_plugin_repo = AsyncMock()
+        mock_pref_repo = AsyncMock()
+        
+        # Mock available plugins (default + user)
+        available_plugins = [
+            MCPPlugin(
+                id=1,
+                user_id=None,  # Default plugin
+                plugin_name="default1",
+                display_name="Default Plugin 1",
+                server_url="http://localhost:8001",
+                enabled=True,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            ),
+            MCPPlugin(
+                id=2,
+                user_id=1,  # User plugin
+                plugin_name="user1",
+                display_name="User Plugin 1",
+                server_url="http://localhost:8002",
+                enabled=True,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+        ]
+        mock_plugin_repo.get_all_available_plugins.return_value = available_plugins
+        
+        # Mock user preferences
+        from app.models.mcp_plugin import UserPluginPreference
+        preferences = [
+            UserPluginPreference(
+                id=1,
+                user_id=1,
+                plugin_id=1,
+                enabled=False  # User disabled default plugin
+            )
+        ]
+        mock_pref_repo.get_user_preferences.return_value = preferences
+        
+        with patch('app.services.mcp_plugin_service.MCPPluginRepository', return_value=mock_plugin_repo), \
+             patch('app.services.mcp_plugin_service.UserPluginPreferenceRepository', return_value=mock_pref_repo):
+            service = MCPPluginService(mock_session)
+            service.plugin_repo = mock_plugin_repo
+            service.user_pref_repo = mock_pref_repo
+            
+            result = await service.list_plugins_with_user_status(1)
+            
+            assert len(result) == 2
+            # First plugin is default and user disabled it
+            assert result[0].is_default is True
+            assert result[0].user_enabled is False
+            # Second plugin is user plugin with no preference (uses default)
+            assert result[1].is_default is False
+            assert result[1].user_enabled is True
+            
+            mock_plugin_repo.get_all_available_plugins.assert_called_once_with(1)
+            mock_pref_repo.get_user_preferences.assert_called_once_with(1)
+    
+    @pytest.mark.asyncio
+    async def test_create_default_plugin(self):
+        """Test creating a default plugin."""
+        mock_session = AsyncMock()
+        mock_plugin_repo = AsyncMock()
+        mock_pref_repo = AsyncMock()
+        
+        # Mock no existing plugin
+        mock_plugin_repo.get_by_name.return_value = None
+        
+        # Mock created plugin
+        created_plugin = MCPPlugin(
+            id=1,
+            user_id=None,  # Default plugin
+            plugin_name="new_default",
+            display_name="New Default Plugin",
+            server_url="http://localhost:8000",
+            enabled=True,
+            created_at=datetime.now(),
+            updated_at=datetime.now()
+        )
+        mock_plugin_repo.create_default_plugin.return_value = created_plugin
+        
+        with patch('app.services.mcp_plugin_service.MCPPluginRepository', return_value=mock_plugin_repo), \
+             patch('app.services.mcp_plugin_service.UserPluginPreferenceRepository', return_value=mock_pref_repo):
+            service = MCPPluginService(mock_session)
+            service.plugin_repo = mock_plugin_repo
+            service.user_pref_repo = mock_pref_repo
+            
+            plugin_data = MCPPluginCreate(
+                plugin_name="new_default",
+                display_name="New Default Plugin",
+                server_url="http://localhost:8000"
+            )
+            
+            result = await service.create_default_plugin(plugin_data)
+            
+            assert result.user_id is None
+            assert result.plugin_name == "new_default"
+            mock_plugin_repo.create_default_plugin.assert_called_once()
+            mock_session.commit.assert_called_once()
+            mock_session.refresh.assert_called_once()
 
 
 class TestMCPToolService:

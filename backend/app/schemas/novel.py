@@ -168,3 +168,21 @@ class BlueprintPatch(BaseModel):
 class EditChapterRequest(BaseModel):
     chapter_number: int
     content: str
+
+
+class NovelGenerateRequest(BaseModel):
+    """小说内容生成请求。"""
+    
+    prompt: str = Field(..., description="生成提示词")
+    enable_mcp: bool = Field(default=True, description="是否启用 MCP 工具增强")
+    temperature: float = Field(default=0.7, description="温度参数")
+    max_length: int = Field(default=2000, description="最大生成长度")
+
+
+class NovelGenerateResponse(BaseModel):
+    """小说内容生成响应。"""
+    
+    content: str = Field(..., description="生成的内容")
+    mcp_enhanced: bool = Field(..., description="是否使用了 MCP 增强")
+    tools_used: List[str] = Field(default_factory=list, description="使用的工具列表")
+    tool_calls_made: int = Field(..., description="工具调用次数")
