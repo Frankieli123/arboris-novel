@@ -193,3 +193,93 @@ async def clear_cache(
     tool_service.clear_cache()
     logger.info("管理员 %s 清空工具缓存", current_user.username)
     return {"status": "success", "message": "缓存已清空"}
+
+
+@router.post("/plugins/import", response_model=Dict, status_code=status.HTTP_200_OK)
+async def import_plugins_from_json(
+    mcp_config: Dict = Body(...),
+    current_user: UserInDB = Depends(get_current_admin),
+    plugin_service: MCPPluginService = Depends(get_mcp_plugin_service),
+) -> Dict:
+    """从 MCP 配置 JSON 批量导入插件（仅管理员）。
+    
+    支持标准的 MCP 配置格式：
+    {
+        "mcpServers": {
+            "plugin-name": {
+                "type": "http",
+                "url": "https://...",
+                "headers": {...}
+            }
+        }
+    }
+    """
+    if "mcpServers" not in mcp_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="配置格式错误：缺少 'mcpServers' 字段"
+        )
+    
+    mcp_servers = mcp_config["mcpServers"]
+    if not isinstance(mcp_servers, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="配置格式错误：'mcpServers' 必须是对象"
+        )
+    
+    created = []
+    skipped = []
+    errors = []
+    
+    for plugin_name, config in mcp_servers.items():
+        try:
+            # 解析配置
+            plugin_type = config.get("type", "http")
+            server_url = config.get("url")
+            headers = config.get("headers")
+            category = config.get("category")
+            
+            if not server_url:
+                errors.append(f"{plugin_name}: 缺少 'url' 字段")
+                continue
+            
+            # 检查插件是否已存在（只检查默认插件）
+            existing = await plugin_service.plugin_repo.get_by_name(plugin_name)
+            if existing and existing.user_id is None:
+                skipped.append(plugin_name)
+                continue
+            
+            # 创建插件
+            plugin_data = MCPPluginCreate(
+                plugin_name=plugin_name,
+                display_name=config.get("display_name", plugin_name),
+                plugin_type=plugin_type,
+                server_url=server_url,
+                headers=headers,
+                enabled=config.get("enabled", True),
+                category=category,
+                config=config.get("config")
+            )
+            
+            plugin = await plugin_service.create_default_plugin(plugin_data)
+            created.append(plugin.plugin_name)
+            
+        except Exception as e:
+            errors.append(f"{plugin_name}: {str(e)}")
+            logger.error("导入插件 %s 失败: %s", plugin_name, e)
+    
+    logger.info(
+        "管理员 %s 导入插件: 成功 %d, 跳过 %d, 失败 %d",
+        current_user.username,
+        len(created),
+        len(skipped),
+        len(errors)
+    )
+    
+    return {
+        "status": "success",
+        "created": created,
+        "skipped": skipped,
+        "errors": errors,
+        "summary": f"成功导入 {len(created)} 个插件，跳过 {len(skipped)} 个已存在的插件，{len(errors)} 个失败"
+    }

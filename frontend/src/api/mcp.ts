@@ -111,6 +111,14 @@ export interface ClearCacheResponse {
   message: string
 }
 
+export interface ImportPluginsResponse {
+  status: string
+  created: string[]
+  skipped: string[]
+  errors: string[]
+  summary: string
+}
+
 // API 函数
 const MCP_BASE = `${API_BASE_URL}${API_PREFIX}/mcp`
 
@@ -200,6 +208,16 @@ export class MCPAPI {
   static async clearCache(): Promise<ClearCacheResponse> {
     return request(`${MCP_BASE}/cache/clear`, {
       method: 'POST'
+    })
+  }
+
+  /**
+   * 从 MCP 配置 JSON 批量导入插件（仅管理员）
+   */
+  static async importPluginsFromJson(mcpConfig: Record<string, any>): Promise<ImportPluginsResponse> {
+    return request(`${MCP_BASE}/plugins/import`, {
+      method: 'POST',
+      body: JSON.stringify(mcpConfig)
     })
   }
 }

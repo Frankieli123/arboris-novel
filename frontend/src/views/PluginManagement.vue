@@ -10,6 +10,14 @@
             </n-button>
             <n-button
               v-if="isAdmin"
+              type="info"
+              size="small"
+              @click="openImportModal"
+            >
+              JSON导入
+            </n-button>
+            <n-button
+              v-if="isAdmin"
               type="primary"
               size="small"
               @click="openCreateModal"
@@ -111,6 +119,90 @@
     </template>
   </n-modal>
 
+  <!-- JSON 导入模态框 -->
+  <n-modal
+    v-model:show="importModalVisible"
+    preset="card"
+    title="从 JSON 导入插件"
+    class="import-modal"
+    :style="{ width: '720px', maxWidth: '92vw' }"
+  >
+    <n-space vertical size="large">
+      <n-alert type="info">
+        粘贴标准 MCP 配置 JSON，系统自动提取插件名称。支持 HTTP 和 Stdio 类型
+      </n-alert>
+      
+      <n-form-item label="MCP配置JSON">
+        <n-input
+          v-model:value="importJson"
+          type="textarea"
+          :rows="16"
+          placeholder='{
+  "mcpServers": {
+    "exa": {
+      "type": "http",
+      "url": "https://mcp.exa.ai/mcp?exaApiKey=YOUR_API_KEY",
+      "headers": {}
+    }
+  }
+}'
+        />
+      </n-form-item>
+
+      <n-form-item label="插件分类">
+        <n-select
+          v-model:value="importCategory"
+          :options="categoryOptions"
+          placeholder="选择插件的功能类别，用于AI智能匹配使用场景"
+        />
+      </n-form-item>
+    </n-space>
+    
+    <template #footer>
+      <n-space justify="end">
+        <n-button quaternary @click="closeImportModal">取消</n-button>
+        <n-button type="primary" :loading="importing" @click="submitImport">
+          导入
+        </n-button>
+      </n-space>
+    </template>
+  </n-modal>
+
+  <!-- 导入结果模态框 -->
+  <n-modal
+    v-model:show="importResultModalVisible"
+    preset="card"
+    title="导入结果"
+    class="import-result-modal"
+    :style="{ width: '560px', maxWidth: '92vw' }"
+  >
+    <n-result
+      v-if="importResult"
+      :status="importResult.errors.length === 0 ? 'success' : 'warning'"
+      :title="importResult.summary"
+    >
+      <template #footer>
+        <n-space vertical>
+          <n-card v-if="importResult.created.length > 0" title="成功导入" size="small" type="success">
+            <n-ul>
+              <n-li v-for="name in importResult.created" :key="name">{{ name }}</n-li>
+            </n-ul>
+          </n-card>
+          <n-card v-if="importResult.skipped.length > 0" title="已跳过（已存在）" size="small" type="warning">
+            <n-ul>
+              <n-li v-for="name in importResult.skipped" :key="name">{{ name }}</n-li>
+            </n-ul>
+          </n-card>
+          <n-card v-if="importResult.errors.length > 0" title="导入失败" size="small" type="error">
+            <n-ul>
+              <n-li v-for="error in importResult.errors" :key="error">{{ error }}</n-li>
+            </n-ul>
+          </n-card>
+        </n-space>
+      </template>
+    </n-result>
+  </n-modal>
+
   <!-- 测试结果模态框 -->
   <n-modal
     v-model:show="testModalVisible"
@@ -166,6 +258,7 @@ import {
   NModal,
   NPopconfirm,
   NResult,
+  NSelect,
   NSpace,
   NSpin,
   NSwitch,
@@ -174,7 +267,7 @@ import {
   type DataTableColumns
 } from 'naive-ui'
 
-import { MCPAPI, type MCPPlugin, type MCPPluginCreate, type PluginTestReport } from '@/api/mcp'
+import { MCPAPI, type MCPPlugin, type MCPPluginCreate, type PluginTestReport, type ImportPluginsResponse } from '@/api/mcp'
 import { useAlert } from '@/composables/useAlert'
 import { useAuthStore } from '@/stores/auth'
 
@@ -187,12 +280,28 @@ const plugins = ref<MCPPlugin[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
+const importing = ref(false)
 const error = ref<string | null>(null)
 
 const pluginModalVisible = ref(false)
 const testModalVisible = ref(false)
+const importModalVisible = ref(false)
+const importResultModalVisible = ref(false)
 const isCreateMode = ref(true)
 const testReport = ref<PluginTestReport | null>(null)
+const importResult = ref<ImportPluginsResponse | null>(null)
+
+const importJson = ref('')
+const importCategory = ref<string | null>(null)
+
+const categoryOptions = [
+  { label: '搜索类 (Search) - 网络搜索、信息查询', value: 'search' },
+  { label: '文件系统 (Filesystem) - 文件读写、目录操作', value: 'filesystem' },
+  { label: '数据库 (Database) - 数据查询、数据管理', value: 'database' },
+  { label: 'API集成 (API) - 第三方服务调用', value: 'api' },
+  { label: '工具类 (Tools) - 实用工具、辅助功能', value: 'tools' },
+  { label: '其他 (Other)', value: 'other' }
+]
 
 const pluginForm = reactive<MCPPluginCreate & { id?: number }>({
   plugin_name: '',
@@ -359,6 +468,57 @@ const testPlugin = async (id: number) => {
     testModalVisible.value = false
   } finally {
     testing.value = false
+  }
+}
+
+const openImportModal = () => {
+  importJson.value = ''
+  importCategory.value = null
+  importModalVisible.value = true
+}
+
+const closeImportModal = () => {
+  importModalVisible.value = false
+  importing.value = false
+}
+
+const submitImport = async () => {
+  if (!importJson.value.trim()) {
+    showAlert('请输入 MCP 配置 JSON', 'error')
+    return
+  }
+
+  let mcpConfig: any
+  try {
+    mcpConfig = JSON.parse(importJson.value)
+  } catch (err) {
+    showAlert('JSON 格式错误', 'error')
+    return
+  }
+
+  // 如果用户选择了分类，为所有插件添加分类
+  if (importCategory.value && mcpConfig.mcpServers) {
+    for (const pluginName in mcpConfig.mcpServers) {
+      if (!mcpConfig.mcpServers[pluginName].category) {
+        mcpConfig.mcpServers[pluginName].category = importCategory.value
+      }
+    }
+  }
+
+  importing.value = true
+  try {
+    importResult.value = await MCPAPI.importPluginsFromJson(mcpConfig)
+    closeImportModal()
+    importResultModalVisible.value = true
+    
+    // 刷新插件列表
+    if (importResult.value.created.length > 0) {
+      await fetchPlugins()
+    }
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '导入失败', 'error')
+  } finally {
+    importing.value = false
   }
 }
 
