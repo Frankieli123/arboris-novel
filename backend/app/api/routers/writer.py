@@ -8,8 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.config import settings
-from ...core.dependencies import get_current_user
+from ...core.dependencies import get_current_user, get_mcp_registry
 from ...db.session import get_session
+from ...mcp.registry import MCPPluginRegistry
 from ...models.novel import Chapter, ChapterOutline
 from ...schemas.novel import (
     DeleteChapterRequest,
@@ -25,6 +26,7 @@ from ...schemas.user import UserInDB
 from ...services.chapter_context_service import ChapterContextService
 from ...services.chapter_ingest_service import ChapterIngestionService
 from ...services.llm_service import LLMService
+from ...services.mcp_tool_service import MCPToolService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
 from ...services.vector_store_service import VectorStoreService
@@ -55,10 +57,16 @@ async def generate_chapter(
     request: GenerateChapterRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    mcp_registry: MCPPluginRegistry = Depends(get_mcp_registry),
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
-    llm_service = LLMService(session)
+    
+    # 初始化 MCP 工具服务
+    mcp_tool_service = MCPToolService(session, mcp_registry)
+    
+    # 初始化 LLM 服务，传入 MCP 工具服务
+    llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info("用户 %s 开始为项目 %s 生成第 %s 章", current_user.id, project_id, request.chapter_number)
@@ -196,11 +204,15 @@ async def generate_chapter(
     logger.debug("章节写作提示词：%s\n%s", writer_prompt, prompt_input)
     async def _generate_single_version(idx: int) -> Dict:
         try:
-            response = await llm_service.get_llm_response(
-                system_prompt=writer_prompt,
-                conversation_history=[{"role": "user", "content": prompt_input}],
-                temperature=0.9,
+            # 使用 MCP 工具支持的生成方法
+            messages = [
+                {"role": "system", "content": writer_prompt},
+                {"role": "user", "content": prompt_input}
+            ]
+            response = await llm_service.generate_text_with_mcp(
+                messages=messages,
                 user_id=current_user.id,
+                temperature=0.9,
                 timeout=600.0,
             )
             cleaned = remove_think_tags(response)
@@ -414,10 +426,16 @@ async def generate_chapter_outline(
     request: GenerateOutlineRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    mcp_registry: MCPPluginRegistry = Depends(get_mcp_registry),
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
-    llm_service = LLMService(session)
+    
+    # 初始化 MCP 工具服务
+    mcp_tool_service = MCPToolService(session, mcp_registry)
+    
+    # 初始化 LLM 服务，传入 MCP 工具服务
+    llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
 
     await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info(
@@ -443,11 +461,15 @@ async def generate_chapter_outline(
         },
     }
 
-    response = await llm_service.get_llm_response(
-        system_prompt=outline_prompt,
-        conversation_history=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-        temperature=0.7,
+    # 使用 MCP 工具支持的生成方法
+    messages = [
+        {"role": "system", "content": outline_prompt},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+    ]
+    response = await llm_service.generate_text_with_mcp(
+        messages=messages,
         user_id=current_user.id,
+        temperature=0.7,
         timeout=360.0,
     )
     normalized = unwrap_markdown_json(remove_think_tags(response))

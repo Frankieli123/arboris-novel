@@ -14,22 +14,41 @@
         <h2 class="text-xl font-bold text-gray-800 mb-4">设置</h2>
         <nav>
           <ul>
-            <li class="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg cursor-pointer">
+            <li
+              :class="[
+                'px-4 py-2 rounded-lg cursor-pointer transition-colors',
+                activeTab === 'llm' ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-gray-100'
+              ]"
+              @click="activeTab = 'llm'"
+            >
               LLM 配置
             </li>
-            <!-- Add other settings links here in the future -->
+            <li
+              :class="[
+                'px-4 py-2 rounded-lg cursor-pointer transition-colors mt-2',
+                activeTab === 'plugins' ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-gray-100'
+              ]"
+              @click="activeTab = 'plugins'"
+            >
+              MCP 插件
+            </li>
           </ul>
         </nav>
       </div>
 
       <!-- Main Content -->
       <div class="flex-1">
-        <LLMSettings />
+        <LLMSettings v-if="activeTab === 'llm'" />
+        <PluginManagement v-else-if="activeTab === 'plugins'" />
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import LLMSettings from '@/components/LLMSettings.vue';
+import { ref } from 'vue'
+import LLMSettings from '@/components/LLMSettings.vue'
+import PluginManagement from '@/views/PluginManagement.vue'
+
+const activeTab = ref<'llm' | 'plugins'>('llm')
 </script>

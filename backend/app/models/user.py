@@ -29,3 +29,6 @@ class User(Base):
     # 关系映射
     novel_projects: Mapped[list["NovelProject"]] = relationship("NovelProject", back_populates="owner")
     llm_config: Mapped[Optional["LLMConfig"]] = relationship("LLMConfig", back_populates="user", uselist=False)
+    plugin_preferences: Mapped[list["UserPluginPreference"]] = relationship(
+        "UserPluginPreference", back_populates="user", cascade="all, delete-orphan"
+    )

@@ -2,6 +2,7 @@
 
 from .admin_setting import AdminSetting
 from .llm_config import LLMConfig
+from .mcp_plugin import MCPPlugin, UserPluginPreference
 from .novel import (
     BlueprintCharacter,
     BlueprintRelationship,
@@ -23,6 +24,8 @@ from .system_config import SystemConfig
 __all__ = [
     "AdminSetting",
     "LLMConfig",
+    "MCPPlugin",
+    "UserPluginPreference",
     "NovelConversation",
     "NovelBlueprint",
     "BlueprintCharacter",

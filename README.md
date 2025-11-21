@@ -192,6 +192,105 @@ A: 可以尝试：
 
 ---
 
+## MCP 插件系统 🔌
+
+Arboris 现在支持 **MCP (Model Context Protocol)** 插件系统，让 AI 能够在创作过程中访问外部工具和服务！
+
+### 什么是 MCP？
+
+MCP 是一种标准化协议，允许 AI 应用与外部工具（如搜索引擎、知识库、文件系统等）进行通信。通过 MCP 插件，AI 可以：
+- 🔍 实时搜索网络信息，为故事提供真实背景
+- 📚 访问知识库，获取专业领域知识
+- 📁 读取文件系统，引用本地资料
+- 🛠️ 调用自定义工具，扩展 AI 能力
+
+### 快速开始
+
+#### 1. 管理员配置插件
+
+登录管理员账号后，在设置页面的"MCP 插件管理"中：
+
+```
+插件名称：exa-search
+显示名称：Exa 搜索引擎
+服务器 URL：https://your-mcp-server.com
+认证信息：{"Authorization": "Bearer YOUR_API_KEY"}
+分类：search
+```
+
+#### 2. 用户启用插件
+
+普通用户在个人设置中可以看到所有可用插件，选择启用需要的插件即可。
+
+#### 3. AI 自动调用
+
+启用插件后，在生成章节内容或大纲时，AI 会自动判断是否需要使用外部工具：
+
+```
+用户：生成一个关于量子计算的科幻故事开头
+
+AI 思考：我需要了解量子计算的基本原理...
+→ 调用 exa-search 插件搜索"量子计算原理"
+→ 获取搜索结果
+→ 基于真实信息生成故事内容
+```
+
+### 配置示例
+
+#### Exa Search（网络搜索）
+
+```json
+{
+  "plugin_name": "exa-search",
+  "display_name": "Exa 搜索引擎",
+  "plugin_type": "http",
+  "server_url": "https://api.exa.ai/mcp",
+  "headers": {
+    "Authorization": "Bearer YOUR_EXA_API_KEY"
+  },
+  "category": "search",
+  "enabled": true
+}
+```
+
+#### 文件系统访问
+
+```json
+{
+  "plugin_name": "filesystem",
+  "display_name": "本地文件系统",
+  "plugin_type": "http",
+  "server_url": "http://localhost:3000/mcp",
+  "category": "storage",
+  "enabled": true
+}
+```
+
+### 常见问题
+
+**Q: 插件连接失败怎么办？**  
+A: 
+- 检查服务器 URL 是否正确
+- 确认认证信息（API Key）有效
+- 使用管理员的"测试插件"功能诊断问题
+
+**Q: AI 不调用我的插件？**  
+A: 
+- 确认用户已在个人设置中启用该插件
+- 检查插件的全局启用状态
+- AI 会根据任务需求自动判断是否调用，不是每次都会用
+
+**Q: 如何开发自己的 MCP 插件？**  
+A: 参考 [MCP 官方文档](https://modelcontextprotocol.io/) 了解协议规范，或查看我们的[管理员指南](docs/MCP_ADMIN_GUIDE.md)。
+
+**Q: 插件调用会影响性能吗？**  
+A: 系统内置了连接池管理、工具缓存和并行调用优化，正常使用不会明显影响性能。
+
+**Q: 插件调用失败会怎样？**  
+A: 系统会自动降级为普通生成模式，不会中断创作流程。
+
+---
+
 ## 技术栈（给开发者看的）
 
 - **后端：** Python + FastAPI
@@ -199,10 +298,13 @@ A: 可以尝试：
 - **前端：** Vue +TailwindCSS
 - **部署：** Docker + Docker Compose
 - **AI 对接：** OpenAI API（或兼容接口）
+- **MCP 集成：** 官方 MCP Python SDK
 
 ---
 
 ## 面向开发者
+
+> 💡 **完整部署指南**：查看 [部署文档](docs/DEPLOYMENT_GUIDE.md) 了解详细的部署步骤、数据库迁移和生产环境配置。
 
 ### 环境准备
 

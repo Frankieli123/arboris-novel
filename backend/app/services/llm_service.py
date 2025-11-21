@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
 from fastapi import HTTPException, status
@@ -15,6 +15,9 @@ from ..services.prompt_service import PromptService
 from ..services.usage_service import UsageService
 from ..utils.llm_tool import ChatMessage, LLMClient
 
+if TYPE_CHECKING:
+    from ..services.mcp_tool_service import MCPToolService
+
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - 运行环境未安装时兼容
@@ -26,7 +29,7 @@ except ImportError:  # pragma: no cover - Ollama 为可选依赖
 class LLMService:
     """封装与大模型交互的所有逻辑，包括配额控制与配置选择。"""
 
-    def __init__(self, session):
+    def __init__(self, session, mcp_tool_service: Optional["MCPToolService"] = None):
         self.session = session
         self.llm_repo = LLMConfigRepository(session)
         self.system_config_repo = SystemConfigRepository(session)
@@ -34,6 +37,7 @@ class LLMService:
         self.admin_setting_service = AdminSettingService(session)
         self.usage_service = UsageService(session)
         self._embedding_dimensions: Dict[str, int] = {}
+        self.mcp_tool_service = mcp_tool_service
 
     async def get_llm_response(
         self,
@@ -187,6 +191,264 @@ class LLMService:
             len(full_response),
         )
         return full_response
+
+    async def generate_text_with_mcp(
+        self,
+        messages: List[Dict[str, str]],
+        user_id: int,
+        *,
+        temperature: float = 0.7,
+        timeout: float = 300.0,
+    ) -> str:
+        """使用 MCP 工具支持生成文本。
+        
+        实现两轮 AI 调用逻辑：
+        1. 第一轮：AI 分析任务并决定是否使用工具
+        2. 如果 AI 返回工具调用，执行工具并收集结果
+        3. 第二轮：AI 基于工具结果生成最终内容
+        
+        如果所有工具调用失败，系统会降级为普通生成模式。
+        
+        Args:
+            messages: 对话消息列表
+            user_id: 用户 ID
+            temperature: 温度参数
+            timeout: 超时时间
+            
+        Returns:
+            生成的文本内容
+            
+        Raises:
+            HTTPException: 当生成失败时
+        """
+        if not self.mcp_tool_service:
+            logger.warning("MCP 工具服务未初始化，降级为普通生成模式")
+            return await self._stream_and_collect(
+                messages,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=None
+            )
+        
+        # 获取用户启用的 MCP 工具
+        try:
+            tools = await self.mcp_tool_service.get_user_enabled_tools(user_id)
+            logger.info("用户 %d 启用了 %d 个 MCP 工具", user_id, len(tools))
+        except Exception as exc:
+            logger.error("获取用户 MCP 工具失败: %s，降级为普通生成模式", exc)
+            return await self._stream_and_collect(
+                messages,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=None
+            )
+        
+        # 如果没有启用的工具，直接使用普通生成
+        if not tools:
+            logger.info("用户 %d 未启用任何 MCP 工具，使用普通生成模式", user_id)
+            return await self._stream_and_collect(
+                messages,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=None
+            )
+        
+        # 第一轮：调用 AI 并提供工具
+        try:
+            response = await self._call_llm_with_tools(
+                messages,
+                tools,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout
+            )
+        except Exception as exc:
+            logger.error("第一轮 AI 调用失败: %s，降级为普通生成模式", exc)
+            return await self._stream_and_collect(
+                messages,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=None
+            )
+        
+        # 检查 AI 是否决定使用工具
+        tool_calls = response.get("tool_calls")
+        if not tool_calls:
+            # AI 决定不使用工具，直接返回内容
+            content = response.get("content", "")
+            logger.info("AI 未使用工具，直接返回内容（长度: %d）", len(content))
+            return content
+        
+        logger.info("AI 请求调用 %d 个工具", len(tool_calls))
+        
+        # 执行工具调用
+        try:
+            tool_results = await self.mcp_tool_service.execute_tool_calls(user_id, tool_calls)
+            logger.info("工具调用完成，成功: %d/%d",
+                       sum(1 for r in tool_results if r.get("success")),
+                       len(tool_results))
+        except Exception as exc:
+            logger.error("工具调用执行失败: %s，降级为普通生成模式", exc)
+            return await self._stream_and_collect(
+                messages,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=None
+            )
+        
+        # 检查是否所有工具调用都失败
+        all_failed = all(not r.get("success", False) for r in tool_results)
+        if all_failed:
+            logger.warning("所有工具调用都失败，降级为普通生成模式")
+            return await self._stream_and_collect(
+                messages,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=None
+            )
+        
+        # 第二轮：将工具结果添加到对话历史，再次调用 AI
+        # 添加 AI 的工具调用消息
+        messages.append({
+            "role": "assistant",
+            "content": response.get("content") or "",
+            "tool_calls": tool_calls
+        })
+        
+        # 添加工具结果消息
+        for tool_result in tool_results:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_result["tool_call_id"],
+                "name": tool_result["name"],
+                "content": tool_result["content"]
+            })
+        
+        # 第二轮调用 AI 生成最终内容
+        try:
+            final_content = await self._stream_and_collect(
+                messages,
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=None
+            )
+            logger.info("第二轮 AI 调用成功，生成内容长度: %d", len(final_content))
+            return final_content
+        except Exception as exc:
+            logger.error("第二轮 AI 调用失败: %s", exc)
+            raise
+    
+    async def _call_llm_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]],
+        *,
+        temperature: float,
+        user_id: Optional[int],
+        timeout: float,
+    ) -> Dict[str, Any]:
+        """调用 LLM 并提供工具列表。
+        
+        Args:
+            messages: 对话消息列表
+            tools: OpenAI Function Calling 格式的工具列表
+            temperature: 温度参数
+            user_id: 用户 ID
+            timeout: 超时时间
+            
+        Returns:
+            包含 content 和可选 tool_calls 的响应字典
+        """
+        config = await self._resolve_llm_config(user_id)
+        
+        # 使用 OpenAI 客户端进行非流式调用（工具调用需要完整响应）
+        client = AsyncOpenAI(
+            api_key=config["api_key"],
+            base_url=config.get("base_url")
+        )
+        
+        try:
+            response = await client.chat.completions.create(
+                model=config.get("model") or "gpt-3.5-turbo",
+                messages=messages,
+                tools=tools,
+                temperature=temperature,
+                timeout=timeout
+            )
+            
+            choice = response.choices[0]
+            message = choice.message
+            
+            result = {
+                "content": message.content or "",
+                "finish_reason": choice.finish_reason
+            }
+            
+            # 如果有工具调用，添加到结果中
+            if message.tool_calls:
+                result["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    }
+                    for tc in message.tool_calls
+                ]
+            
+            logger.debug(
+                "LLM 工具调用响应: model=%s user_id=%s tool_calls=%d",
+                config.get("model"),
+                user_id,
+                len(result.get("tool_calls", []))
+            )
+            
+            return result
+            
+        except InternalServerError as exc:
+            detail = "AI 服务内部错误，请稍后重试"
+            response_obj = getattr(exc, "response", None)
+            if response_obj is not None:
+                try:
+                    payload = response_obj.json()
+                    error_data = payload.get("error", {}) if isinstance(payload, dict) else {}
+                    detail = error_data.get("message_zh") or error_data.get("message") or detail
+                except Exception:
+                    detail = str(exc) or detail
+            else:
+                detail = str(exc) or detail
+            logger.error(
+                "LLM 工具调用内部错误: model=%s user_id=%s detail=%s",
+                config.get("model"),
+                user_id,
+                detail,
+                exc_info=exc,
+            )
+            raise HTTPException(status_code=503, detail=detail)
+        except (httpx.RemoteProtocolError, httpx.ReadTimeout, APIConnectionError, APITimeoutError) as exc:
+            if isinstance(exc, httpx.RemoteProtocolError):
+                detail = "AI 服务连接被意外中断，请稍后重试"
+            elif isinstance(exc, (httpx.ReadTimeout, APITimeoutError)):
+                detail = "AI 服务响应超时，请稍后重试"
+            else:
+                detail = "无法连接到 AI 服务，请稍后重试"
+            logger.error(
+                "LLM 工具调用失败: model=%s user_id=%s detail=%s",
+                config.get("model"),
+                user_id,
+                detail,
+                exc_info=exc,
+            )
+            raise HTTPException(status_code=503, detail=detail) from exc
 
     async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Optional[str]]:
         if user_id:
