@@ -71,7 +71,8 @@ Dockerfile
 # Test files
 **/tests/
 **/test/
-**/*test*.py
+**/test_*.py
+**/*_test.py
 **/*.test.js
 **/*.spec.js
 coverage/
