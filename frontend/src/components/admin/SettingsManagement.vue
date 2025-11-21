@@ -102,13 +102,84 @@
             {{ mcpError }}
           </n-alert>
 
-          <n-data-table
-            :columns="pluginColumns"
-            :data="defaultPlugins"
-            :loading="mcpLoading"
-            :bordered="false"
-            :row-key="pluginRowKey"
-            class="plugin-table"
+          <div v-if="defaultPlugins.length" class="plugin-list">
+            <n-card
+              v-for="plugin in defaultPlugins"
+              :key="plugin.id"
+              class="plugin-card"
+              :bordered="true"
+            >
+              <div class="plugin-card-body">
+                <div class="plugin-main">
+                  <div class="plugin-title-row">
+                    <span class="plugin-name">{{ plugin.display_name }}</span>
+                    <n-tag
+                      size="small"
+                      :type="plugin.enabled ? 'success' : 'default'"
+                    >
+                      {{ plugin.enabled ? '运行中' : '已停用' }}
+                    </n-tag>
+                    <n-tag
+                      v-if="plugin.plugin_type"
+                      size="small"
+                      type="info"
+                    >
+                      {{ plugin.plugin_type.toUpperCase() }}
+                    </n-tag>
+                    <n-tag
+                      v-if="plugin.category"
+                      size="small"
+                      type="info"
+                    >
+                      {{ plugin.category }}
+                    </n-tag>
+                  </div>
+                  <div class="plugin-subtitle-row">
+                    {{ plugin.plugin_name }}
+                  </div>
+                  <div class="plugin-url-row">
+                    {{ plugin.server_url }}
+                  </div>
+                </div>
+
+                <div class="plugin-actions">
+                  <div class="plugin-switch">
+                    <span class="plugin-switch-label">
+                      {{ plugin.enabled ? '全局状态：启用' : '全局状态：已停用' }}
+                    </span>
+                    <n-switch
+                      :value="plugin.enabled"
+                      size="small"
+                      @update:value="() => toggleDefaultPlugin(plugin)"
+                    />
+                  </div>
+
+                  <n-space size="small">
+                    <n-popconfirm
+                      :positive-text="'删除'"
+                      :negative-text="'取消'"
+                      type="error"
+                      placement="left"
+                      @positive-click="() => deletePlugin(plugin.id)"
+                    >
+                      <template #trigger>
+                        <n-button size="small" quaternary type="error">
+                          删除
+                        </n-button>
+                      </template>
+                      确认删除该默认插件？
+                    </n-popconfirm>
+                  </n-space>
+                </div>
+              </div>
+            </n-card>
+          </div>
+
+          <n-result
+            v-else
+            status="info"
+            title="暂无默认插件"
+            description="点击右上角“添加默认插件”导入 MCP 插件"
           />
         </n-spin>
       </n-card>
@@ -562,6 +633,20 @@ const deletePlugin = async (id: number) => {
   }
 }
 
+const toggleDefaultPlugin = async (plugin: MCPPlugin) => {
+  try {
+    const newEnabled = !plugin.enabled
+    const updated = await AdminAPI.updateDefaultMCPPlugin(plugin.id, { enabled: newEnabled })
+    const index = defaultPlugins.value.findIndex((p) => p.id === plugin.id)
+    if (index !== -1) {
+      defaultPlugins.value[index].enabled = updated.enabled
+    }
+    showAlert(newEnabled ? '默认插件已启用' : '默认插件已禁用', 'success')
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '切换失败', 'error')
+  }
+}
+
 const columns: DataTableColumns<SystemConfig> = [
   {
     title: 'Key',
@@ -629,82 +714,6 @@ const columns: DataTableColumns<SystemConfig> = [
   }
 ]
 
-const pluginColumns: DataTableColumns<MCPPlugin> = [
-  {
-    title: '插件名称',
-    key: 'display_name',
-    width: 180,
-    ellipsis: { tooltip: true }
-  },
-  {
-    title: '标识符',
-    key: 'plugin_name',
-    width: 150,
-    ellipsis: { tooltip: true }
-  },
-  {
-    title: '服务器地址',
-    key: 'server_url',
-    ellipsis: { tooltip: true }
-  },
-  {
-    title: '分类',
-    key: 'category',
-    width: 120,
-    render(row) {
-      return row.category ? h(NTag, { size: 'small', type: 'info' }, { default: () => row.category }) : '—'
-    }
-  },
-  {
-    title: '状态',
-    key: 'enabled',
-    width: 100,
-    align: 'center',
-    render(row) {
-      return h(
-        NTag,
-        { size: 'small', type: row.enabled ? 'success' : 'default' },
-        { default: () => (row.enabled ? '启用' : '禁用') }
-      )
-    }
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    align: 'center',
-    width: 100,
-    render(row) {
-      return h(
-        NSpace,
-        { justify: 'center', size: 'small' },
-        {
-          default: () => [
-            h(
-              NPopconfirm,
-              {
-                'positive-text': '删除',
-                'negative-text': '取消',
-                type: 'error',
-                placement: 'left',
-                onPositiveClick: () => deletePlugin(row.id)
-              },
-              {
-                default: () => '确认删除该默认插件？',
-                trigger: () =>
-                  h(
-                    NButton,
-                    { size: 'small', type: 'error', quaternary: true },
-                    { default: () => '删除' }
-                  )
-              }
-            )
-          ]
-        }
-      )
-    }
-  }
-]
-
 onMounted(() => {
   fetchDailyLimit()
   fetchConfigs()
@@ -737,6 +746,74 @@ onMounted(() => {
 
 .config-modal {
   max-width: min(640px, 92vw);
+}
+
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plugin-card {
+  border-radius: 10px;
+}
+
+.plugin-card-body {
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
+  gap: 16px;
+}
+
+.plugin-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.plugin-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.plugin-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.plugin-subtitle-row {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+.plugin-url-row {
+  font-size: 12px;
+  color: #4b5563;
+  word-break: break-all;
+}
+
+.plugin-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  min-width: 180px;
+}
+
+.plugin-switch {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.plugin-switch-label {
+  font-size: 12px;
+  color: #6b7280;
 }
 
 @media (max-width: 767px) {

@@ -29,13 +29,107 @@
           {{ error }}
         </n-alert>
 
-        <n-data-table
-          :columns="columns"
-          :data="plugins"
-          :loading="loading"
-          :bordered="false"
-          :row-key="rowKey"
-          class="plugin-table"
+        <div v-if="plugins.length" class="plugin-list">
+          <n-card
+            v-for="plugin in plugins"
+            :key="plugin.id"
+            class="plugin-card"
+            :bordered="true"
+          >
+            <div class="plugin-card-body">
+              <div class="plugin-main">
+                <div class="plugin-title-row">
+                  <span class="plugin-name">{{ plugin.display_name }}</span>
+                  <n-tag
+                    size="small"
+                    :type="plugin.enabled ? 'success' : 'default'"
+                  >
+                    {{ plugin.enabled ? '运行中' : '已停用' }}
+                  </n-tag>
+                  <n-tag
+                    v-if="plugin.plugin_type"
+                    size="small"
+                    type="info"
+                  >
+                    {{ plugin.plugin_type.toUpperCase() }}
+                  </n-tag>
+                  <n-tag
+                    v-if="plugin.category"
+                    size="small"
+                    type="info"
+                  >
+                    {{ plugin.category }}
+                  </n-tag>
+                  <n-tag
+                    v-if="plugin.is_default"
+                    size="small"
+                    type="warning"
+                  >
+                    默认
+                  </n-tag>
+                </div>
+                <div class="plugin-subtitle-row">
+                  {{ plugin.plugin_name }}
+                </div>
+                <div class="plugin-url-row">
+                  {{ plugin.server_url }}
+                </div>
+              </div>
+
+              <div class="plugin-actions">
+                <div class="plugin-switch">
+                  <span class="plugin-switch-label">
+                    {{
+                      plugin.user_enabled === null
+                        ? '我的状态：未设置'
+                        : plugin.user_enabled
+                          ? '我的状态：已启用'
+                          : '我的状态：已禁用'
+                    }}
+                  </span>
+                  <n-switch
+                    :value="plugin.user_enabled === null ? false : plugin.user_enabled"
+                    size="small"
+                    @update:value="() => togglePlugin(plugin)"
+                  />
+                </div>
+
+                <n-space size="small">
+                  <n-button
+                    v-if="isAdmin"
+                    size="small"
+                    tertiary
+                    type="info"
+                    @click="testPlugin(plugin.id)"
+                  >
+                    测试
+                  </n-button>
+                  <n-popconfirm
+                    v-if="isAdmin"
+                    :positive-text="'删除'"
+                    :negative-text="'取消'"
+                    type="error"
+                    placement="left"
+                    @positive-click="() => deletePlugin(plugin.id)"
+                  >
+                    <template #trigger>
+                      <n-button size="small" quaternary type="error">
+                        删除
+                      </n-button>
+                    </template>
+                    确认删除该插件？
+                  </n-popconfirm>
+                </n-space>
+              </div>
+            </div>
+          </n-card>
+        </div>
+
+        <n-result
+          v-else
+          status="info"
+          title="暂无插件"
+          description="点击右上角“添加插件”导入 MCP 插件"
         />
       </n-spin>
     </n-card>
@@ -488,6 +582,74 @@ onMounted(() => {
   font-size: 1.25rem;
   font-weight: 600;
   color: #1f2937;
+}
+
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plugin-card {
+  border-radius: 10px;
+}
+
+.plugin-card-body {
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
+  gap: 16px;
+}
+
+.plugin-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.plugin-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.plugin-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.plugin-subtitle-row {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+.plugin-url-row {
+  font-size: 12px;
+  color: #4b5563;
+  word-break: break-all;
+}
+
+.plugin-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  min-width: 180px;
+}
+
+.plugin-switch {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.plugin-switch-label {
+  font-size: 12px;
+  color: #6b7280;
 }
 
 .plugin-modal,
