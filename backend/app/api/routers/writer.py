@@ -1,10 +1,10 @@
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.config import settings
@@ -13,14 +13,19 @@ from ...db.session import get_session
 from ...mcp.registry import MCPPluginRegistry
 from ...models.novel import Chapter, ChapterOutline
 from ...schemas.novel import (
+    ChapterPlanItem,
     DeleteChapterRequest,
     EditChapterRequest,
     EvaluateChapterRequest,
     GenerateChapterRequest,
     GenerateOutlineRequest,
     NovelProject as NovelProjectSchema,
+    OutlineChaptersResponse,
+    OutlineExpansionRequest,
+    OutlineExpansionResponse,
     SelectVersionRequest,
     UpdateChapterOutlineRequest,
+    UpdateExpansionPlanRequest,
 )
 from ...schemas.user import UserInDB
 from ...services.chapter_context_service import ChapterContextService
@@ -51,6 +56,12 @@ def _extract_tail_excerpt(text: Optional[str], limit: int = 500) -> str:
     return stripped[-limit:]
 
 
+def _ensure_prompt(prompt: str | None, name: str) -> str:
+    if not prompt:
+        raise HTTPException(status_code=500, detail=f"未配置名为 {name} 的提示词，请联系管理员")
+    return prompt
+
+
 @router.post("/novels/{project_id}/chapters/generate", response_model=NovelProjectSchema)
 async def generate_chapter(
     project_id: str,
@@ -70,12 +81,31 @@ async def generate_chapter(
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info("用户 %s 开始为项目 %s 生成第 %s 章", current_user.id, project_id, request.chapter_number)
-    outline = await novel_service.get_outline(project_id, request.chapter_number)
+
+    # 按原有流程：先按章节号获取/创建章节，再补充其所属大纲信息
+    chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number)
+
+    outline = None
+    # 如果章节已经绑定了大纲（例如由拆分生成的子章节），优先使用该大纲
+    if getattr(chapter, "outline_id", None):
+        for o in project.outlines:
+            if o.id == chapter.outline_id:
+                outline = o
+                break
+
+    # 兼容旧模式：如果章节上还没有绑定大纲，则仍然允许通过章节号直接查找对应大纲
+    if outline is None:
+        outline = await novel_service.get_outline(project_id, request.chapter_number)
+
     if not outline:
-        logger.warning("项目 %s 未找到第 %s 章纲要，生成流程终止", project_id, request.chapter_number)
+        logger.warning("项目 %s 未找到第 %s 章对应的大纲记录，生成流程终止", project_id, request.chapter_number)
         raise HTTPException(status_code=404, detail="蓝图中未找到对应章节纲要")
 
-    chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number)
+    # 显式绑定章节与纲要，便于后续按大纲维度管理多章节
+    if not getattr(chapter, "outline_id", None):
+        chapter.outline_id = outline.id
+    if not getattr(chapter, "sub_index", None):
+        chapter.sub_index = 1
     chapter.real_summary = None
     chapter.selected_version_id = None
     chapter.status = "generating"
@@ -156,6 +186,36 @@ async def generate_chapter(
 
     outline_title = outline.title or f"第{outline.chapter_number}章"
     outline_summary = outline.summary or "暂无摘要"
+
+    # 如果该章节来自大纲拆分，优先使用 expansion_plan 中的细粒度规划补充标题与摘要
+    plan = getattr(chapter, "expansion_plan", None)
+    child_plan_text = ""
+    if isinstance(plan, dict):
+        plan_title = plan.get("title")
+        plan_summary = plan.get("plot_summary") or plan.get("summary")
+        if plan_title:
+            outline_title = f"{outline_title} - {plan_title}"
+        if plan_summary:
+            if outline_summary and outline_summary != "暂无摘要":
+                outline_summary = f"{outline_summary}\n子章节剧情摘要：{plan_summary}"
+            else:
+                outline_summary = plan_summary
+
+        plan_parts: List[str] = []
+        if plan_title:
+            plan_parts.append(f"子章节标题：{plan_title}")
+        if plan_summary:
+            plan_parts.append(f"剧情摘要：{plan_summary}")
+        if plan.get("narrative_goal"):
+            plan_parts.append(f"叙事目标：{plan['narrative_goal']}")
+        if plan.get("conflict_type"):
+            plan_parts.append(f"冲突类型：{plan['conflict_type']}")
+        if isinstance(plan.get("key_events"), list) and plan["key_events"]:
+            plan_parts.append("关键事件：")
+            for ev in plan["key_events"]:
+                plan_parts.append(f"- {ev}")
+        child_plan_text = "\n".join(plan_parts)
+
     query_parts = [outline_title, outline_summary]
     if request.writing_notes:
         query_parts.append(request.writing_notes)
@@ -175,8 +235,44 @@ async def generate_chapter(
         summary_count,
     )
     # print("rag_context:",rag_context)
+    # 基于 Blueprint Schema 中的 chapter_outline 构造「章节大纲骨架」，对齐 MuMu 的 outlines_context 思路
+    # 若某章节已经有真实内容摘要（completed_chapters），则骨架中优先展示真实摘要，未来章节则展示大纲摘要
+    outlines_context_lines: List[str] = []
+    completed_map = {c["chapter_number"]: c for c in completed_chapters}
+    chapter_outline_list = getattr(project_schema.blueprint, "chapter_outline", None) or []
+    for item in sorted(chapter_outline_list, key=lambda x: x.chapter_number):
+        num = item.chapter_number
+        title = item.title or ""
+        # 已完成章节优先使用 real_summary，未完成的使用大纲摘要
+        completed = completed_map.get(num)
+        if completed and completed.get("summary"):
+            summary = completed["summary"]
+        else:
+            summary = item.summary or ""
+        children = getattr(item, "children", None) or []
+
+        if summary:
+            base = f"第{num}章《{title}》：{summary}"
+        else:
+            base = f"第{num}章《{title}》"
+
+        # 如果该大纲已拆分出子章节，则追加其章节号信息，帮助模型理解章节与子章节的映射
+        if children:
+            child_nums = [
+                str(getattr(child, "chapter_number", None))
+                for child in children
+                if getattr(child, "chapter_number", None) is not None
+            ]
+            if child_nums:
+                base += f"（当前大纲下章节：第{'、'.join(child_nums)}章）"
+
+        outlines_context_lines.append(base)
+
+    outlines_context = "\n".join(outlines_context_lines) if outlines_context_lines else "暂无章节大纲骨架"
+
     # 将蓝图、前情、RAG 检索结果拼装成结构化段落，供模型理解
     blueprint_text = json.dumps(blueprint_dict, ensure_ascii=False, indent=2)
+
     completed_lines = [
         f"- 第{item['chapter_number']}章 - {item['title']}:{item['summary']}"
         for item in completed_chapters
@@ -190,13 +286,14 @@ async def generate_chapter(
 
     mcp_reference_materials = ""
     try:
+        planning_system_prompt = _ensure_prompt(
+            await prompt_service.get_prompt("chapter_mcp_planning"),
+            "chapter_mcp_planning",
+        )
         planning_messages = [
             {
                 "role": "system",
-                "content": (
-                    "你是一名资深小说写作助手，可以使用外部工具（MCP 插件）检索资料，"
-                    "为后续章节写作提供真实、详细的背景信息。"
-                ),
+                "content": planning_system_prompt,
             },
             {
                 "role": "user",
@@ -229,18 +326,25 @@ async def generate_chapter(
         )
         mcp_reference_materials = ""
 
-    prompt_sections = [
+    prompt_sections: List[tuple[str, str]] = [
         ("[世界蓝图](JSON)", blueprint_text),
+        ("[章节大纲骨架]", outlines_context),
         # ("[前情摘要]", completed_section),
         ("[上一章摘要]", previous_summary_text),
         ("[上一章结尾]", previous_tail_excerpt),
         ("[检索到的剧情上下文](Markdown)", rag_chunks_text),
         ("[检索到的章节摘要]", rag_summaries_text),
+    ]
+
+    if child_plan_text:
+        prompt_sections.append(("[子章节规划]", child_plan_text))
+
+    prompt_sections.append(
         (
             "[当前章节目标]",
             f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}",
-        ),
-    ]
+        )
+    )
     if mcp_reference_materials:
         prompt_sections.append(("[MCP 参考资料]", mcp_reference_materials))
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
@@ -535,13 +639,14 @@ async def generate_chapter_outline(
 
     mcp_reference_materials = ""
     try:
+        planning_system_prompt = _ensure_prompt(
+            await prompt_service.get_prompt("outline_mcp_planning"),
+            "outline_mcp_planning",
+        )
         planning_messages = [
             {
                 "role": "system",
-                "content": (
-                    "你是一名资深剧情策划助手，可以使用外部工具（MCP 插件）检索资料，"
-                    "帮助设计更合理、更有张力的章节大纲。"
-                ),
+                "content": planning_system_prompt,
             },
             {
                 "role": "user",
@@ -660,6 +765,321 @@ async def generate_chapter_outline(
     return await novel_service.get_project_schema(project_id, current_user.id)
 
 
+@router.post(
+    "/novels/{project_id}/outlines/{outline_id}/expand",
+    response_model=OutlineExpansionResponse,
+)
+async def expand_outline_to_chapters(
+    project_id: str,
+    outline_id: int,
+    request: OutlineExpansionRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    mcp_registry: MCPPluginRegistry = Depends(get_mcp_registry),
+) -> OutlineExpansionResponse:
+    """根据单个章节大纲展开为多章节规划，并可自动创建章节记录。"""
+
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+
+    # 初始化 MCP 工具服务与 LLM 服务
+    mcp_tool_service = MCPToolService(session, mcp_registry)
+    llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
+
+    # 校验项目归属
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    # 获取大纲记录，确保属于当前项目
+    result = await session.execute(
+        select(ChapterOutline).where(
+            ChapterOutline.project_id == project_id,
+            ChapterOutline.id == outline_id,
+        )
+    )
+    outline = result.scalars().first()
+    if not outline:
+        logger.warning("项目 %s 未找到大纲 %s，无法展开", project_id, outline_id)
+        raise HTTPException(status_code=404, detail="大纲不存在")
+
+    # 读取项目整体蓝图，用于构建上下文
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    blueprint = project_schema.blueprint
+    blueprint_dict: Dict[str, Any] = blueprint.model_dump() if blueprint else {}
+
+    world_setting = blueprint_dict.get("world_setting") or {}
+    characters = blueprint_dict.get("characters") or []
+    chapter_outlines = blueprint_dict.get("chapter_outline") or []
+
+    # 构造前后大纲上下文，帮助模型控制剧情边界
+    prev_outline_desc = ""
+    next_outline_desc = ""
+    if chapter_outlines:
+        current_ch_no = outline.chapter_number
+        sorted_outlines = sorted(
+            chapter_outlines,
+            key=lambda o: o.get("chapter_number", 0),
+        )
+        idx = next(
+            (i for i, o in enumerate(sorted_outlines) if o.get("chapter_number") == current_ch_no),
+            None,
+        )
+        if idx is not None:
+            if idx > 0:
+                prev = sorted_outlines[idx - 1]
+                prev_outline_desc = (
+                    f"【前一节】第{prev.get('chapter_number')}章 {prev.get('title')}: "
+                    f"{prev.get('summary', '')}"
+                )
+            if idx + 1 < len(sorted_outlines):
+                nxt = sorted_outlines[idx + 1]
+                next_outline_desc = (
+                    f"【后一节】第{nxt.get('chapter_number')}章 {nxt.get('title')}: "
+                    f"{nxt.get('summary', '')}"
+                )
+
+    context_blocks: List[str] = []
+    if prev_outline_desc:
+        context_blocks.append(prev_outline_desc)
+    if next_outline_desc:
+        context_blocks.append(next_outline_desc)
+    outline_context = "\n\n".join(context_blocks) if context_blocks else "（无前后文）"
+
+    # 角色摘要文本
+    characters_lines: List[str] = []
+    for c in characters:
+        name = c.get("name") or "未知角色"
+        identity = c.get("identity") or ""
+        personality = c.get("personality") or ""
+        snippet = personality[:80] if personality else "暂无描述"
+        line = f"- {name}: {identity}；性格：{snippet}"
+        characters_lines.append(line)
+    characters_text = "\n".join(characters_lines) if characters_lines else "暂无角色信息"
+
+    outline_summary = outline.summary or "暂无摘要"
+
+    strategy_desc = {
+        "balanced": "均衡展开：每章剧情量相当，节奏平稳",
+        "climax": "高潮重点：重点章节剧情更丰满，其它章节略简",
+        "detail": "细节丰富：每章都深入描写，场景和情感更细腻",
+    }
+    strategy_instruction = strategy_desc.get(request.expansion_strategy, strategy_desc["balanced"])
+    system_prompt = _ensure_prompt(
+        await prompt_service.get_prompt("outline_expansion"),
+        "outline_expansion",
+    )
+
+    payload: Dict[str, Any] = {
+        "project": {
+            "id": project_schema.id,
+            "title": project_schema.title,
+            "genre": blueprint_dict.get("genre"),
+            "target_audience": blueprint_dict.get("target_audience"),
+            "style": blueprint_dict.get("style"),
+            "tone": blueprint_dict.get("tone"),
+            "one_sentence_summary": blueprint_dict.get("one_sentence_summary"),
+        },
+        "world_setting": world_setting,
+        "characters_text": characters_text,
+        "outline": {
+            "id": outline.id,
+            "chapter_number": outline.chapter_number,
+            "title": outline.title,
+            "summary": outline_summary,
+        },
+        "outline_context": outline_context,
+        "expansion": {
+            "target_chapter_count": request.target_chapter_count,
+            "expansion_strategy": request.expansion_strategy,
+            "strategy_instruction": strategy_instruction,
+            "enable_scene_analysis": request.enable_scene_analysis,
+        },
+    }
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+    raw = await llm_service.generate_text(
+        messages=messages,
+        temperature=0.7,
+        user_id=current_user.id,
+        timeout=600.0,
+        response_format=None,
+    )
+
+    normalized = unwrap_markdown_json(remove_think_tags(raw))
+    try:
+        data = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        logger.error(
+            "项目 %s 大纲 %s 展开 JSON 解析失败: %s, 原始内容预览: %s",
+            project_id,
+            outline_id,
+            exc,
+            normalized[:500],
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"大纲展开失败，AI 返回的内容格式不正确: {str(exc)}",
+        ) from exc
+
+    # 兼容模型返回单个对象的情况
+    if isinstance(data, dict):
+        plans_raw = [data]
+    else:
+        plans_raw = data
+
+    chapter_plans: List[ChapterPlanItem] = []
+    for item in plans_raw:
+        try:
+            plan = ChapterPlanItem.model_validate(item)
+            chapter_plans.append(plan)
+        except Exception as exc:
+            logger.warning("跳过无法解析的章节规划条目: %s, error=%s", item, exc)
+
+    if not chapter_plans:
+        raise HTTPException(status_code=500, detail="AI 未能生成有效的章节规划")
+
+    created_chapters_payload: Optional[List[Dict[str, Any]]] = None
+
+    if request.auto_create_chapters:
+        # 计算起始章节号
+        result = await session.execute(
+            select(func.max(Chapter.chapter_number)).where(Chapter.project_id == project_id)
+        )
+        max_number = result.scalar()
+        start_chapter_number = (max_number or 0) + 1
+
+        created: List[Chapter] = []
+        for idx, plan in enumerate(chapter_plans):
+            chapter_number = start_chapter_number + idx
+            sub_index = plan.sub_index or (idx + 1)
+
+            chapter = Chapter(
+                project_id=project_id,
+                outline_id=outline.id,
+                chapter_number=chapter_number,
+                sub_index=sub_index,
+                status="not_generated",
+                word_count=0,
+                expansion_plan=plan.model_dump(),
+            )
+            session.add(chapter)
+            created.append(chapter)
+
+        await session.commit()
+        for ch in created:
+            await session.refresh(ch)
+
+        created_chapters_payload = [
+            {
+                "id": ch.id,
+                "chapter_number": ch.chapter_number,
+                "sub_index": ch.sub_index,
+                "title": (ch.expansion_plan or {}).get("title")
+                if isinstance(ch.expansion_plan, dict)
+                else None,
+                "status": ch.status,
+            }
+            for ch in created
+        ]
+
+        logger.info(
+            "项目 %s 大纲 %s 已根据规划创建 %s 个章节记录，起始章节号 %s",
+            project_id,
+            outline_id,
+            len(created),
+            start_chapter_number,
+        )
+
+    return OutlineExpansionResponse(
+        outline_id=outline.id,
+        outline_title=outline.title or f"第{outline.chapter_number}章",
+        target_chapter_count=request.target_chapter_count,
+        actual_chapter_count=len(chapter_plans),
+        expansion_strategy=request.expansion_strategy,
+        chapter_plans=chapter_plans,
+        created_chapters=created_chapters_payload,
+    )
+
+
+@router.get(
+    "/novels/{project_id}/outlines/{outline_id}/chapters",
+    response_model=OutlineChaptersResponse,
+)
+async def get_outline_chapters(
+    project_id: str,
+    outline_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> OutlineChaptersResponse:
+    """查询某个大纲下已经展开出的章节及其规划。"""
+
+    novel_service = NovelService(session)
+
+    # 校验项目归属
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    # 确认大纲存在且属于当前项目
+    result = await session.execute(
+        select(ChapterOutline).where(
+            ChapterOutline.project_id == project_id,
+            ChapterOutline.id == outline_id,
+        )
+    )
+    outline = result.scalars().first()
+    if not outline:
+        raise HTTPException(status_code=404, detail="大纲不存在")
+
+    # 查询该大纲下的章节
+    result = await session.execute(
+        select(Chapter)
+        .where(
+            Chapter.project_id == project_id,
+            Chapter.outline_id == outline_id,
+        )
+        .order_by(Chapter.chapter_number, Chapter.sub_index)
+    )
+    chapters = result.scalars().all()
+
+    if not chapters:
+        return OutlineChaptersResponse(
+            has_chapters=False,
+            chapter_count=0,
+            chapters=[],
+            expansion_plans=None,
+        )
+
+    # 还原每个章节的规划
+    plans: List[ChapterPlanItem] = []
+    for ch in chapters:
+        plan_data = getattr(ch, "expansion_plan", None)
+        if isinstance(plan_data, dict):
+            try:
+                plans.append(ChapterPlanItem.model_validate(plan_data))
+            except Exception:
+                continue
+
+    return OutlineChaptersResponse(
+        has_chapters=True,
+        chapter_count=len(chapters),
+        chapters=[
+            {
+                "id": ch.id,
+                "chapter_number": ch.chapter_number,
+                "sub_index": ch.sub_index or 1,
+                "title": (ch.expansion_plan or {}).get("title")
+                if isinstance(ch.expansion_plan, dict)
+                else None,
+                "status": ch.status,
+            }
+            for ch in chapters
+        ],
+        expansion_plans=plans or None,
+    )
+
+
 @router.post("/novels/{project_id}/chapters/update-outline", response_model=NovelProjectSchema)
 async def update_chapter_outline(
     project_id: str,
@@ -696,6 +1116,40 @@ async def update_chapter_outline(
     outline.summary = request.summary
     await session.commit()
     logger.info("项目 %s 第 %s 章大纲已更新", project_id, request.chapter_number)
+
+    return await novel_service.get_project_schema(project_id, current_user.id)
+
+
+@router.post("/novels/{project_id}/chapters/update-expansion-plan", response_model=NovelProjectSchema)
+async def update_expansion_plan(
+    project_id: str,
+    request: UpdateExpansionPlanRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    """更新指定章节的展开规划（expansion_plan）。"""
+
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    stmt = select(Chapter).where(
+        Chapter.project_id == project_id,
+        Chapter.chapter_number == request.chapter_number,
+    )
+    result = await session.execute(stmt)
+    chapter = result.scalars().first()
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在")
+
+    chapter.expansion_plan = request.expansion_plan.model_dump()
+    await session.commit()
+
+    logger.info(
+        "用户 %s 更新项目 %s 第 %s 章展开规划",
+        current_user.id,
+        project_id,
+        request.chapter_number,
+    )
 
     return await novel_service.get_project_schema(project_id, current_user.id)
 

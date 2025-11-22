@@ -145,6 +145,12 @@ class ChapterOutline(Base):
     summary: Mapped[Optional[str]] = mapped_column(Text)
 
     project: Mapped[NovelProject] = relationship(back_populates="outlines")
+    chapters: Mapped[list["Chapter"]] = relationship(
+        "Chapter",
+        back_populates="outline",
+        cascade="all, delete-orphan",
+        order_by="Chapter.sub_index",
+    )
 
 
 class Chapter(Base):
@@ -154,10 +160,15 @@ class Chapter(Base):
 
     id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False)
+    outline_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("chapter_outlines.id", ondelete="SET NULL"), nullable=True
+    )
     chapter_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    sub_index: Mapped[int] = mapped_column(Integer, default=1)
     real_summary: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="not_generated")
     word_count: Mapped[int] = mapped_column(Integer, default=0)
+    expansion_plan: Mapped[Optional[dict]] = mapped_column(JSON)
     selected_version_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("chapter_versions.id", ondelete="SET NULL"), nullable=True
     )
@@ -165,6 +176,11 @@ class Chapter(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     project: Mapped[NovelProject] = relationship(back_populates="chapters")
+    outline: Mapped[Optional[ChapterOutline]] = relationship(
+        "ChapterOutline",
+        back_populates="chapters",
+        foreign_keys=[outline_id],
+    )
     versions: Mapped[list["ChapterVersion"]] = relationship(
         "ChapterVersion",
         back_populates="chapter",

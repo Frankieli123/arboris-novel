@@ -1,17 +1,20 @@
 import json
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.dependencies import get_current_user, get_mcp_registry
 from ...db.session import get_session
+from ...models.novel import Chapter, ChapterOutline
 from ...schemas.novel import (
     Blueprint,
     BlueprintGenerationResponse,
     BlueprintPatch,
     Chapter as ChapterSchema,
+    ChapterPlanItem,
     ConverseRequest,
     ConverseResponse,
     NovelGenerateRequest,
@@ -338,8 +341,24 @@ async def generate_blueprint(
         await session.commit()
         logger.info("项目 %s 更新标题为 %s，并标记为 blueprint_ready", project_id, blueprint.title)
 
+    # 第三阶段：根据章节大纲自动拆分章节规划并创建章节记录
+    # 这一阶段属于增强体验逻辑，失败时不会影响蓝图生成结果
+    try:
+        await _auto_expand_chapter_outlines(
+            project_id=project_id,
+            session=session,
+            current_user=current_user,
+            mcp_registry=mcp_registry,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "项目 %s 自动拆分章节时发生异常，将继续返回蓝图结果: %s",
+            project_id,
+            exc,
+        )
+
     ai_message = (
-        "太棒了！我已经根据我们的对话整理出完整的小说蓝图。请确认是否进入写作阶段，或提出修改意见。"
+        "太棒了！我已经根据我们的对话整理出完整的小说蓝图，并为后续写作准备好了章节规划。"
     )
     return BlueprintGenerationResponse(blueprint=blueprint, ai_message=ai_message)
 
@@ -425,5 +444,248 @@ async def generate_novel_content(
         content=result["content"],
         mcp_enhanced=result["mcp_enhanced"],
         tools_used=result["tools_used"],
-        tool_calls_made=result["tool_calls_made"]
+        tool_calls_made=result["tool_calls_made"],
     )
+
+
+async def _auto_expand_chapter_outlines(
+    project_id: str,
+    session: AsyncSession,
+    current_user: UserInDB,
+    mcp_registry: MCPPluginRegistry,
+    *,
+    target_chapter_count: int = 3,
+    expansion_strategy: str = "balanced",
+    enable_scene_analysis: bool = False,
+) -> None:
+    """根据当前蓝图中的章节大纲，自动拆分为章节规划并创建章节记录。
+
+    约定：
+    - 仅在项目当前不存在任何章节记录时执行，避免重复拆分；
+    - 使用与 writer.expand_outline_to_chapters 相同的提示词与解析方式；
+    - 任意单个大纲拆分失败只记录日志并跳过，不影响整体流程。
+    """
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+
+    result = await session.execute(
+        select(func.count(Chapter.id)).where(Chapter.project_id == project_id)
+    )
+    chapter_count = result.scalar() or 0
+    if chapter_count > 0:
+        logger.info("项目 %s 已存在 %s 个章节记录，跳过自动章节拆分", project_id, chapter_count)
+        return
+
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    blueprint = project_schema.blueprint
+    if not blueprint:
+        logger.info("项目 %s 当前尚无蓝图，跳过自动章节拆分", project_id)
+        return
+
+    blueprint_dict: Dict[str, Any] = blueprint.model_dump()
+    world_setting = blueprint_dict.get("world_setting") or {}
+    characters = blueprint_dict.get("characters") or []
+    chapter_outline_dicts = blueprint_dict.get("chapter_outline") or []
+
+    result = await session.execute(
+        select(ChapterOutline)
+        .where(ChapterOutline.project_id == project_id)
+        .order_by(ChapterOutline.chapter_number)
+    )
+    outlines = list(result.scalars())
+    if not outlines:
+        logger.info("项目 %s 没有可用的章节大纲记录，跳过自动章节拆分", project_id)
+        return
+
+    sorted_outline_dicts = sorted(
+        chapter_outline_dicts,
+        key=lambda o: o.get("chapter_number", 0),
+    )
+    outline_index_by_number: Dict[int, int] = {}
+    for idx, item in enumerate(sorted_outline_dicts):
+        number = item.get("chapter_number")
+        if isinstance(number, int):
+            outline_index_by_number[number] = idx
+
+    characters_lines: List[str] = []
+    for c in characters:
+        name = c.get("name") or "未知角色"
+        identity = c.get("identity") or ""
+        personality = c.get("personality") or ""
+        snippet = personality[:80] if personality else "暂无描述"
+        line = f"- {name}: {identity}；性格：{snippet}"
+        characters_lines.append(line)
+    characters_text = "\n".join(characters_lines) if characters_lines else "暂无角色信息"
+
+    strategy_desc: Dict[str, str] = {
+        "balanced": "均衡展开：每章剧情量相当，节奏平稳",
+        "climax": "高潮重点：重点章节剧情更丰满，其它章节略简",
+        "detail": "细节丰富：每章都深入描写，场景和情感更细腻",
+    }
+    strategy_instruction = strategy_desc.get(expansion_strategy, strategy_desc["balanced"])
+
+    system_prompt = _ensure_prompt(
+        await prompt_service.get_prompt("outline_expansion"),
+        "outline_expansion",
+    )
+
+    mcp_tool_service = MCPToolService(session, mcp_registry)
+    llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
+
+    result = await session.execute(
+        select(func.max(Chapter.chapter_number)).where(Chapter.project_id == project_id)
+    )
+    max_number = result.scalar() or 0
+    next_chapter_number = max_number + 1
+
+    total_created = 0
+
+    for outline in outlines:
+        current_ch_no = outline.chapter_number
+
+        prev_outline_desc = ""
+        next_outline_desc = ""
+        idx = outline_index_by_number.get(current_ch_no)
+        if idx is not None and sorted_outline_dicts:
+            if idx > 0:
+                prev = sorted_outline_dicts[idx - 1]
+                prev_outline_desc = (
+                    f"【前一节】第{prev.get('chapter_number')}章 {prev.get('title')}: "
+                    f"{prev.get('summary', '')}"
+                )
+            if idx + 1 < len(sorted_outline_dicts):
+                nxt = sorted_outline_dicts[idx + 1]
+                next_outline_desc = (
+                    f"【后一节】第{nxt.get('chapter_number')}章 {nxt.get('title')}: "
+                    f"{nxt.get('summary', '')}"
+                )
+
+        context_blocks: List[str] = []
+        if prev_outline_desc:
+            context_blocks.append(prev_outline_desc)
+        if next_outline_desc:
+            context_blocks.append(next_outline_desc)
+        outline_context = "\n\n".join(context_blocks) if context_blocks else "（无前后文）"
+
+        outline_summary = outline.summary or "暂无摘要"
+
+        payload: Dict[str, Any] = {
+            "project": {
+                "id": project_schema.id,
+                "title": project_schema.title,
+                "genre": blueprint_dict.get("genre"),
+                "target_audience": blueprint_dict.get("target_audience"),
+                "style": blueprint_dict.get("style"),
+                "tone": blueprint_dict.get("tone"),
+                "one_sentence_summary": blueprint_dict.get("one_sentence_summary"),
+            },
+            "world_setting": world_setting,
+            "characters_text": characters_text,
+            "outline": {
+                "id": outline.id,
+                "chapter_number": outline.chapter_number,
+                "title": outline.title,
+                "summary": outline_summary,
+            },
+            "outline_context": outline_context,
+            "expansion": {
+                "target_chapter_count": target_chapter_count,
+                "expansion_strategy": expansion_strategy,
+                "strategy_instruction": strategy_instruction,
+                "enable_scene_analysis": enable_scene_analysis,
+            },
+        }
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+
+        try:
+            raw = await llm_service.generate_text(
+                messages=messages,
+                temperature=0.7,
+                user_id=current_user.id,
+                timeout=600.0,
+                response_format=None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "项目 %s 自动拆分章节时，大纲 %s 调用 LLM 失败: %s",
+                project_id,
+                outline.id,
+                exc,
+            )
+            continue
+
+        normalized = unwrap_markdown_json(remove_think_tags(raw))
+        try:
+            data = json.loads(normalized)
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "项目 %s 自动拆分章节时，大纲 %s 展开 JSON 解析失败: %s, 原始内容预览: %s",
+                project_id,
+                outline.id,
+                exc,
+                normalized[:500],
+            )
+            continue
+
+        if isinstance(data, dict):
+            plans_raw = [data]
+        else:
+            plans_raw = data
+
+        chapter_plans: List[ChapterPlanItem] = []
+        for item in plans_raw:
+            try:
+                plan = ChapterPlanItem.model_validate(item)
+                chapter_plans.append(plan)
+            except Exception as exc:
+                logger.warning(
+                    "项目 %s 自动拆分章节时，跳过无法解析的规划条目: %s, error=%s",
+                    project_id,
+                    item,
+                    exc,
+                )
+
+        if not chapter_plans:
+            logger.warning("项目 %s 大纲 %s 未生成任何有效的章节规划，已跳过", project_id, outline.id)
+            continue
+
+        created_chapters: List[Chapter] = []
+        for idx_plan, plan in enumerate(chapter_plans):
+            chapter_number = next_chapter_number
+            next_chapter_number += 1
+            sub_index = plan.sub_index or (idx_plan + 1)
+
+            chapter = Chapter(
+                project_id=project_id,
+                outline_id=outline.id,
+                chapter_number=chapter_number,
+                sub_index=sub_index,
+                status="not_generated",
+                word_count=0,
+                expansion_plan=plan.model_dump(),
+            )
+            session.add(chapter)
+            created_chapters.append(chapter)
+
+        await session.commit()
+        for ch in created_chapters:
+            await session.refresh(ch)
+
+        created_count = len(created_chapters)
+        total_created += created_count
+        logger.info(
+            "项目 %s 大纲 %s 已自动拆分并创建 %s 个章节记录，当前累计 %s 个章节",
+            project_id,
+            outline.id,
+            created_count,
+            total_created,
+        )
+
+    if total_created == 0:
+        logger.info("项目 %s 自动拆分章节流程结束，但未创建任何章节记录", project_id)
+    else:
+        logger.info("项目 %s 自动拆分章节流程完成，共创建 %s 个章节记录", project_id, total_created)

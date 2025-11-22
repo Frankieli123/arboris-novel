@@ -531,6 +531,22 @@ class NovelService:
     def _build_blueprint_schema(self, project: NovelProject) -> Blueprint:
         blueprint_obj = project.blueprint
         if blueprint_obj:
+            # 为每条大纲收集其下关联的子章节（按章节号与子序号排序）
+            children_map: Dict[int, List[Dict[str, Any]]] = {}
+            for chapter in sorted(
+                project.chapters,
+                key=lambda c: (c.chapter_number, c.sub_index),
+            ):
+                if chapter.outline_id is None:
+                    continue
+                children = children_map.setdefault(chapter.outline_id, [])
+                children.append(
+                    {
+                        "chapter_number": chapter.chapter_number,
+                        "sub_index": chapter.sub_index or 1,
+                    }
+                )
+
             return Blueprint(
                 title=blueprint_obj.title or "",
                 target_audience=blueprint_obj.target_audience or "",
@@ -563,9 +579,11 @@ class NovelService:
                 ],
                 chapter_outline=[
                     ChapterOutlineSchema(
+                        id=outline.id,
                         chapter_number=outline.chapter_number,
                         title=outline.title,
                         summary=outline.summary or "",
+                        children=children_map.get(outline.id),
                     )
                     for outline in sorted(project.outlines, key=lambda o: o.chapter_number)
                 ],
@@ -669,10 +687,17 @@ class NovelService:
         evaluation_text: Optional[str] = None
         status_value = ChapterGenerationStatus.NOT_GENERATED.value
         word_count = 0
+        outline_id: Optional[int] = None
+        sub_index: int = 1
+        expansion_plan: Optional[Dict[str, Any]] = None
 
         if chapter:
             status_value = chapter.status or ChapterGenerationStatus.NOT_GENERATED.value
             word_count = chapter.word_count or 0
+            outline_id = chapter.outline_id
+            sub_index = chapter.sub_index or 1
+            if chapter.expansion_plan is not None:
+                expansion_plan = chapter.expansion_plan
 
             # 只有在 include_content=True 时才包含完整内容
             if include_content:
@@ -691,6 +716,9 @@ class NovelService:
             chapter_number=chapter_number,
             title=title,
             summary=summary,
+            outline_id=outline_id,
+            sub_index=sub_index,
+            expansion_plan=expansion_plan,
             real_summary=real_summary,
             content=content,
             versions=versions,

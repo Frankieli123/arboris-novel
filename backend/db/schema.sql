@@ -88,14 +88,18 @@ CREATE TABLE IF NOT EXISTS chapter_outlines (
 CREATE TABLE IF NOT EXISTS chapters (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     project_id CHAR(36) NOT NULL,
+    outline_id BIGINT NULL,
     chapter_number INT NOT NULL,
+    sub_index INT NOT NULL DEFAULT 1,
     real_summary TEXT NULL,
     status VARCHAR(32) DEFAULT 'not_generated',
     word_count INT DEFAULT 0,
+    expansion_plan JSON NULL,
     selected_version_id BIGINT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_chapters_project FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+    CONSTRAINT fk_chapters_outline FOREIGN KEY (outline_id) REFERENCES chapter_outlines(id) ON DELETE SET NULL,
     UNIQUE KEY uq_chapter_project_number (project_id, chapter_number)
 );
 

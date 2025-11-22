@@ -78,10 +78,17 @@ export interface Character {
   relationship_to_protagonist?: string
 }
 
+export interface OutlineChildChapter {
+  chapter_number: number
+  sub_index: number
+}
+
 export interface ChapterOutline {
+  id?: number
   chapter_number: number
   title: string
   summary: string
+  children?: OutlineChildChapter[]
 }
 
 export interface ChapterVersion {
@@ -129,6 +136,62 @@ export interface ChapterGenerationResponse {
   evaluation: string | null
   ai_message: string
   chapter_number: number
+}
+
+export interface ChapterPlanItem {
+  sub_index: number
+  title: string
+  plot_summary: string
+  key_events: string[]
+  character_focus: string[]
+  emotional_tone: string
+  narrative_goal: string
+  conflict_type: string
+  estimated_words: number
+  scenes?: string[]
+}
+
+export interface OutlineExpansionRequest {
+  target_chapter_count: number
+  expansion_strategy: 'balanced' | 'climax' | 'detail'
+  enable_scene_analysis: boolean
+  auto_create_chapters: boolean
+}
+
+export interface OutlineExpansionResponse {
+  outline_id: number
+  outline_title: string
+  target_chapter_count: number
+  actual_chapter_count: number
+  expansion_strategy: string
+  chapter_plans: ChapterPlanItem[]
+  created_chapters?: Array<{
+    id: number
+    chapter_number: number
+    sub_index: number
+    title?: string | null
+    status: string
+  }>
+}
+
+export interface ExistingExpandedChapter {
+  id: number
+  chapter_number: number
+  sub_index: number
+  title?: string | null
+  status: string
+}
+
+export interface OutlineChaptersResponse {
+  has_chapters: boolean
+  chapter_count: number
+  chapters: ExistingExpandedChapter[]
+  expansion_plans?: ChapterPlanItem[]
+}
+
+export interface UpdateExpansionPlanRequest {
+  chapter_number: number
+  expansion_plan: ChapterPlanItem
 }
 
 export interface DeleteNovelsResponse {
@@ -181,6 +244,24 @@ export class NovelAPI {
         conversation_state: conversationState
       })
     })
+  }
+
+  static async expandOutline(
+    projectId: string,
+    outlineId: number,
+    payload: OutlineExpansionRequest
+  ): Promise<OutlineExpansionResponse> {
+    return request(`${WRITER_BASE}/${projectId}/outlines/${outlineId}/expand`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  static async getOutlineChapters(
+    projectId: string,
+    outlineId: number
+  ): Promise<OutlineChaptersResponse> {
+    return request(`${WRITER_BASE}/${projectId}/outlines/${outlineId}/chapters`)
   }
 
   static async generateBlueprint(projectId: string): Promise<BlueprintGenerationResponse> {
@@ -249,6 +330,20 @@ export class NovelAPI {
     return request(`${WRITER_BASE}/${projectId}/chapters/update-outline`, {
       method: 'POST',
       body: JSON.stringify(chapterOutline)
+    })
+  }
+
+  static async updateChapterExpansionPlan(
+    projectId: string,
+    chapterNumber: number,
+    expansionPlan: ChapterPlanItem
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/update-expansion-plan`, {
+      method: 'POST',
+      body: JSON.stringify({
+        chapter_number: chapterNumber,
+        expansion_plan: expansionPlan
+      } as UpdateExpansionPlanRequest)
     })
   }
 

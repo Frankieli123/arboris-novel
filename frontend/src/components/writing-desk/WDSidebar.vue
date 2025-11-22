@@ -134,6 +134,20 @@
                       <p class="text-xs text-gray-600 line-clamp-2 leading-relaxed">{{ chapter.summary }}</p>
                     </Tooltip>
 
+                    <div
+                      v-if="chapter.children && chapter.children.length"
+                      class="mt-2 flex flex-wrap gap-2"
+                    >
+                      <button
+                        v-for="child in chapter.children"
+                        :key="child.chapter_number + '-' + child.sub_index"
+                        @click.stop="$emit('selectChapter', child.chapter_number)"
+                        class="px-2 py-0.5 text-xs rounded-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors"
+                      >
+                        第{{ child.chapter_number }}章
+                      </button>
+                    </div>
+
                     <!-- 章节状态 -->
                     <div class="mt-2 flex items-center gap-2">
                       <span v-if="isChapterCompleted(chapter.chapter_number)" class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">

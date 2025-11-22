@@ -47,13 +47,23 @@ class ChapterGenerationStatus(str, Enum):
     SUCCESSFUL = "successful"
 
 
+class OutlineChildChapter(BaseModel):
+    chapter_number: int
+    sub_index: int
+
+
 class ChapterOutline(BaseModel):
+    id: Optional[int] = None
     chapter_number: int
     title: str
     summary: str
+    children: Optional[List[OutlineChildChapter]] = None
 
 
 class Chapter(ChapterOutline):
+    outline_id: Optional[int] = None
+    sub_index: Optional[int] = 1
+    expansion_plan: Optional[Dict[str, Any]] = None
     real_summary: Optional[str] = None
     content: Optional[str] = None
     versions: Optional[List[str]] = None
@@ -180,6 +190,58 @@ class BlueprintPatch(BaseModel):
     characters: Optional[List[Dict[str, Any]]] = None
     relationships: Optional[List[Relationship]] = None
     chapter_outline: Optional[List[ChapterOutline]] = None
+
+
+class ChapterPlanItem(BaseModel):
+    sub_index: int = Field(..., description="子章节序号", ge=1)
+    title: str = Field(..., description="章节标题")
+    plot_summary: str = Field(..., description="剧情摘要")
+    key_events: List[str] = Field(..., description="关键事件列表")
+    character_focus: List[str] = Field(..., description="主要涉及的角色")
+    emotional_tone: str = Field(..., description="情感基调")
+    narrative_goal: str = Field(..., description="叙事目标")
+    conflict_type: str = Field(..., description="冲突类型")
+    estimated_words: int = Field(3000, description="预计字数", ge=0)
+    scenes: Optional[List[str]] = Field(None, description="场景列表")
+
+
+class OutlineExpansionRequest(BaseModel):
+    target_chapter_count: int = Field(3, description="目标章节数", ge=1, le=10)
+    expansion_strategy: str = Field(
+        "balanced", description="展开策略: balanced(均衡), climax(高潮重点), detail(细节丰富)"
+    )
+    enable_scene_analysis: bool = Field(False, description="是否包含场景规划")
+    auto_create_chapters: bool = Field(True, description="是否自动创建章节记录")
+
+
+class OutlineExpansionResponse(BaseModel):
+    outline_id: int
+    outline_title: str
+    target_chapter_count: int
+    actual_chapter_count: int
+    expansion_strategy: str
+    chapter_plans: List[ChapterPlanItem]
+    created_chapters: Optional[List[Dict[str, Any]]] = None
+
+
+class ExistingExpandedChapter(BaseModel):
+    id: int
+    chapter_number: int
+    sub_index: int
+    title: Optional[str] = None
+    status: str
+
+
+class OutlineChaptersResponse(BaseModel):
+    has_chapters: bool
+    chapter_count: int
+    chapters: List[ExistingExpandedChapter]
+    expansion_plans: Optional[List[ChapterPlanItem]] = None
+
+
+class UpdateExpansionPlanRequest(BaseModel):
+    chapter_number: int
+    expansion_plan: ChapterPlanItem
 
 
 class EditChapterRequest(BaseModel):

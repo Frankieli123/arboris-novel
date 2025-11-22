@@ -237,7 +237,7 @@ class Settings(BaseSettings):
         encoded_password = quote_plus(self.mysql_password)
         database = (self.mysql_database or "").strip("/")
         return (
-            f"mysql+asyncmy://{self.mysql_user}:{encoded_password}"
+            f"mysql+aiomysql://{self.mysql_user}:{encoded_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{database}"
         )
 

@@ -147,6 +147,9 @@
                 :class="componentContainerClass"
                 @edit="handleSectionEdit"
                 @add="startAddChapter"
+                @expand-outline="startExpandOutline"
+                @edit-chapter="openEditChapterOutline"
+                @delete-chapter="handleChapterOutlineDelete"
               />
             </div>
           </div>
@@ -221,16 +224,479 @@
         </div>
       </div>
     </transition>
+
+    <!-- Edit Single Chapter Outline Modal -->
+    <WDEditChapterModal
+      v-if="!isAdmin"
+      :show="isChapterEditModalOpen"
+      :chapter="editingChapterOutline"
+      @close="isChapterEditModalOpen = false"
+      @save="handleChapterOutlineSave"
+    />
+
+    <!-- Existing Expanded Chapters Preview Modal -->
+    <transition
+      enter-active-class="transition-all duration-300"
+      leave-active-class="transition-all duration-300"
+      enter-from-class="opacity-0 scale-95"
+      leave-to-class="opacity-0 scale-95"
+    >
+      <div v-if="isExpandPreviewModalOpen && !isAdmin" class="fixed inset-0 z-50 flex items-center justify-center px-4">
+        <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" @click="isExpandPreviewModalOpen = false"></div>
+        <div class="relative bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 sm:p-8 w-full max-w-4xl" @click.stop>
+          <div class="flex items-center justify-between mb-4 gap-3">
+            <div>
+              <h3 class="text-xl font-bold text-slate-900">
+                大纲：第{{ expandTargetOutline?.chapter_number }}章《{{ expandTargetOutline?.title || '未命名章节' }}》
+              </h3>
+            </div>
+          </div>
+
+          <div v-if="existingExpansion && existingExpansion.expansion_plans && existingExpansion.expansion_plans.length" class="mb-4">
+            <div class="flex gap-2 overflow-x-auto pb-2">
+              <button
+                v-for="(plan, idx) in existingExpansion.expansion_plans"
+                :key="idx"
+                type="button"
+                class="px-3 py-1.5 text-xs rounded-lg border transition-all whitespace-nowrap"
+                :class="idx === previewActiveIndex
+                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                  : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'"
+                @click="previewActiveIndex = idx"
+              >
+                章节 {{ plan.sub_index }}：{{ plan.title }}
+              </button>
+            </div>
+          </div>
+
+          <div
+            v-if="existingExpansion && existingExpansion.expansion_plans && existingExpansion.expansion_plans.length"
+            class="max-h-[26rem] overflow-y-auto space-y-4 pr-3"
+          >
+            <div
+              v-for="(plan, idx) in existingExpansion.expansion_plans"
+              v-show="idx === previewActiveIndex"
+              :key="idx"
+              class="space-y-4"
+            >
+              <!-- 子章节头部信息 -->
+              <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div>
+                  <div class="text-base sm:text-lg font-semibold text-slate-900 leading-snug">
+                    {{ plan.title || '未命名章节' }}
+                  </div>
+                </div>
+                <div class="flex flex-wrap gap-1.5 text-xs text-slate-600 justify-start md:justify-end">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-lg bg-blue-50 text-blue-600 border border-blue-100">
+                    {{ plan.emotional_tone || '情绪未标注' }}
+                  </span>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-lg bg-orange-50 text-orange-600 border border-orange-100">
+                    {{ plan.conflict_type || '冲突未标注' }}
+                  </span>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-100">
+                    约 {{ plan.estimated_words || 0 }} 字
+                  </span>
+                </div>
+              </div>
+
+              <!-- 主要内容分区 -->
+              <div class="grid grid-cols-1 gap-4">
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+                  <div class="flex items-center justify-between mb-2">
+                    <h4 class="text-sm font-semibold text-slate-800">情节概要</h4>
+                    <button
+                      type="button"
+                      class="text-slate-300 hover:text-indigo-500 transition-colors"
+                      @click="openPlanFieldEditor(plan, 'plot_summary', idx)"
+                    >
+                      <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+                        <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div v-if="isEditingPlanField('plot_summary', idx)">
+                    <textarea
+                      ref="planEditTextarea"
+                      v-model="planEditRaw"
+                      rows="4"
+                      class="w-full rounded-lg border border-slate-300 bg-transparent text-sm text-slate-600 leading-6 px-3 py-2 resize-none focus:outline-none focus:border-slate-400 transition-all duration-200"
+                    ></textarea>
+                    <div class="mt-3 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        class="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
+                        @click="cancelPlanEdit"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        class="px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all duration-200 disabled:opacity-50"
+                        :disabled="planEditSaving"
+                        @click="savePlanEdit"
+                      >
+                        {{ planEditSaving ? '保存中...' : '保存' }}
+                      </button>
+                    </div>
+                  </div>
+                  <p v-else class="text-sm text-slate-600 whitespace-pre-line leading-6">
+                    {{ plan.plot_summary || '暂无情节概要' }}
+                  </p>
+                </div>
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+                  <div class="flex items-center justify-between mb-2">
+                    <h4 class="text-sm font-semibold text-slate-800">叙事目标</h4>
+                    <button
+                      type="button"
+                      class="text-slate-300 hover:text-indigo-500 transition-colors"
+                      @click="openPlanFieldEditor(plan, 'narrative_goal', idx)"
+                    >
+                      <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+                        <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div v-if="isEditingPlanField('narrative_goal', idx)">
+                    <textarea
+                      ref="planEditTextarea"
+                      v-model="planEditRaw"
+                      rows="4"
+                      class="w-full rounded-lg border border-slate-300 bg-transparent text-sm text-slate-600 leading-6 px-3 py-2 resize-none focus:outline-none focus:border-slate-400 transition-all duration-200"
+                    ></textarea>
+                    <div class="mt-3 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        class="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
+                        @click="cancelPlanEdit"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        class="px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all duration-200 disabled:opacity-50"
+                        :disabled="planEditSaving"
+                        @click="savePlanEdit"
+                      >
+                        {{ planEditSaving ? '保存中...' : '保存' }}
+                      </button>
+                    </div>
+                  </div>
+                  <p v-else class="text-sm text-slate-600 whitespace-pre-line leading-6">
+                    {{ plan.narrative_goal || '暂无叙事目标说明' }}
+                  </p>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 gap-4">
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+                  <div class="flex items-center justify-between mb-2">
+                    <h4 class="text-sm font-semibold text-slate-800">关键事件</h4>
+                    <button
+                      type="button"
+                      class="text-slate-300 hover:text-indigo-500 transition-colors"
+                      @click="openPlanFieldEditor(plan, 'key_events', idx)"
+                    >
+                      <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+                        <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div v-if="isEditingPlanField('key_events', idx)">
+                    <textarea
+                      ref="planEditTextarea"
+                      v-model="planEditRaw"
+                      rows="4"
+                      class="w-full rounded-lg border border-slate-300 bg-transparent text-sm text-slate-600 leading-6 px-3 py-2 resize-none focus:outline-none focus:border-slate-400 transition-all duration-200"
+                    ></textarea>
+                    <div class="mt-3 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        class="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
+                        @click="cancelPlanEdit"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        class="px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all duration-200 disabled:opacity-50"
+                        :disabled="planEditSaving"
+                        @click="savePlanEdit"
+                      >
+                        {{ planEditSaving ? '保存中...' : '保存' }}
+                      </button>
+                    </div>
+                  </div>
+                  <ul v-else class="text-sm text-slate-600 space-y-1">
+                    <li
+                      v-for="(ev, evIdx) in plan.key_events || []"
+                      :key="evIdx"
+                      class="flex items-start gap-1.5"
+                    >
+                      <span class="mt-1 h-1.5 w-1.5 rounded-full bg-slate-400 flex-shrink-0"></span>
+                      <span>{{ ev }}</span>
+                    </li>
+                    <li v-if="!plan.key_events || !plan.key_events.length" class="text-xs text-slate-400">
+                      暂无关键事件描述
+                    </li>
+                  </ul>
+                </div>
+
+                <div
+                  v-if="plan.scenes && plan.scenes.length"
+                  class="bg-white rounded-xl border border-slate-200 shadow-sm p-4"
+                >
+                  <div class="flex items-center justify-between mb-2">
+                    <h4 class="text-sm font-semibold text-slate-800">场景列表</h4>
+                    <button
+                      type="button"
+                      class="text-slate-300 hover:text-indigo-500 transition-colors"
+                      @click="openPlanFieldEditor(plan, 'scenes', idx)"
+                    >
+                      <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+                        <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div v-if="isEditingPlanField('scenes', idx)">
+                    <textarea
+                      ref="planEditTextarea"
+                      v-model="planEditRaw"
+                      rows="4"
+                      class="w-full rounded-lg border border-slate-300 bg-transparent text-sm text-slate-600 leading-6 px-3 py-2 resize-none focus:outline-none focus:border-slate-400 transition-all duration-200"
+                    ></textarea>
+                    <div class="mt-3 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        class="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
+                        @click="cancelPlanEdit"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        class="px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all duration-200 disabled:opacity-50"
+                        :disabled="planEditSaving"
+                        @click="savePlanEdit"
+                      >
+                        {{ planEditSaving ? '保存中...' : '保存' }}
+                      </button>
+                    </div>
+                  </div>
+                  <ol v-else class="text-sm text-slate-600 space-y-1 list-decimal list-inside">
+                    <li
+                      v-for="(scene, sIdx) in plan.scenes"
+                      :key="sIdx"
+                      class="whitespace-pre-line"
+                    >
+                      {{ scene }}
+                    </li>
+                  </ol>
+                </div>
+
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <h4 class="text-sm font-semibold text-slate-800">涉及角色</h4>
+                      <button
+                        type="button"
+                        class="text-slate-300 hover:text-indigo-500 transition-colors"
+                        @click="openPlanFieldEditor(plan, 'character_focus', idx)"
+                      >
+                        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                          <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+                          <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div v-if="isEditingPlanField('character_focus', idx)">
+                      <textarea
+                        ref="planEditTextarea"
+                        v-model="planEditRaw"
+                        rows="4"
+                        class="w-full rounded-lg border border-slate-300 bg-transparent text-xs text-slate-600 leading-5 px-3 py-2 resize-none focus:outline-none focus:border-slate-400 transition-all duration-200"
+                      ></textarea>
+                      <div class="mt-3 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          class="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
+                          @click="cancelPlanEdit"
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          class="px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all duration-200 disabled:opacity-50"
+                          :disabled="planEditSaving"
+                          @click="savePlanEdit"
+                        >
+                          {{ planEditSaving ? '保存中...' : '保存' }}
+                        </button>
+                      </div>
+                    </div>
+                    <div v-else class="flex flex-wrap gap-1.5 text-xs text-slate-600">
+                      <span
+                        v-for="(char, cIdx) in plan.character_focus || []"
+                        :key="cIdx"
+                        class="inline-flex items-center px-2 py-0.5 rounded-lg bg-purple-50 text-purple-600 border border-purple-100"
+                      >
+                        {{ char }}
+                      </span>
+                      <span v-if="!plan.character_focus || !plan.character_focus.length" class="text-xs text-slate-400">
+                        暂无角色标注
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="text-sm text-slate-500 mt-2">
+            当前大纲已创建章节，但缺少详细规划信息。
+          </div>
+
+          <div class="mt-6 flex justify-end gap-3">
+            <button
+              type="button"
+              class="px-5 py-2.5 text-sm font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
+              @click="isExpandPreviewModalOpen = false"
+            >
+              关闭
+            </button>
+            <button
+              type="button"
+              class="px-5 py-2.5 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-all duration-200 disabled:opacity-50"
+              :disabled="deleteExpandedLoading || !existingExpansion || !existingExpansion.chapter_count"
+              @click="handleDeleteExpandedChapters"
+            >
+              {{ deleteExpandedLoading ? '删除中...' : `删除所有展开章节 (${existingExpansion?.chapter_count || 0} 章)` }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- Outline Expansion Modal -->
+    <transition
+      enter-active-class="transition-all duration-300"
+      leave-active-class="transition-all duration-300"
+      enter-from-class="opacity-0 scale-95"
+      leave-to-class="opacity-0 scale-95"
+    >
+      <div v-if="isExpandModalOpen && !isAdmin" class="fixed inset-0 z-50 flex items-center justify-center px-4">
+        <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" @click="isExpandModalOpen = false"></div>
+        <div class="relative bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 sm:p-8 w-full max-w-3xl" @click.stop>
+          <h3 class="text-xl font-bold text-slate-900 mb-2">展开章节大纲</h3>
+          <p class="text-sm text-slate-500 mb-6">
+            将当前大纲拆分为多章详细规划，可选择是否自动创建章节记录。
+          </p>
+
+          <div v-if="expandTargetOutline" class="mb-6 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+            <div class="text-sm text-slate-500">
+              当前大纲：第{{ expandTargetOutline.chapter_number }}章《{{ expandTargetOutline.title || '未命名章节' }}》
+            </div>
+            <div class="text-sm text-slate-600 whitespace-pre-line">
+              {{ expandTargetOutline.summary || '暂无摘要' }}
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-1">目标章节数</label>
+              <input
+                v-model.number="expandTargetCount"
+                type="number"
+                min="1"
+                max="10"
+                class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
+              >
+              <p class="mt-1 text-xs text-slate-400">建议 2-5 章，用于细化当前大纲。</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-1">展开策略</label>
+              <select
+                v-model="expandStrategy"
+                class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
+              >
+                <option value="balanced">均衡展开（默认）</option>
+                <option value="climax">高潮重点</option>
+                <option value="detail">细节丰富</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-2">
+              <input
+                id="enable-scene-analysis"
+                v-model="enableSceneAnalysis"
+                type="checkbox"
+                class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              >
+              <label for="enable-scene-analysis" class="text-sm text-slate-700">生成场景级规划</label>
+            </div>
+            <div class="flex items-center gap-2">
+              <input
+                id="auto-create-chapters"
+                v-model="autoCreateChapters"
+                type="checkbox"
+                class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              >
+              <label for="auto-create-chapters" class="text-sm text-slate-700">自动创建章节记录</label>
+            </div>
+          </div>
+
+          <div v-if="expandResult" class="mt-4 border-t border-slate-200 pt-4 max-h-80 overflow-y-auto">
+            <h4 class="text-sm font-semibold text-slate-800 mb-3">
+              展开结果：共 {{ expandResult.actual_chapter_count }} 章规划
+            </h4>
+            <ol class="space-y-3 text-sm text-slate-700">
+              <li
+                v-for="plan in expandResult.chapter_plans"
+                :key="plan.sub_index + '-' + plan.title"
+                class="p-3 rounded-xl bg-slate-50 border border-slate-200"
+              >
+                <div class="flex items-center justify-between mb-1">
+                  <span class="font-semibold">章节 {{ plan.sub_index }}：{{ plan.title }}</span>
+                  <span class="text-xs text-slate-400">预计字数：{{ plan.estimated_words }}</span>
+                </div>
+                <p class="text-xs text-slate-600 mb-1">剧情摘要：{{ plan.plot_summary }}</p>
+                <p class="text-xs text-slate-500">情感基调：{{ plan.emotional_tone }} ｜ 叙事目标：{{ plan.narrative_goal }}</p>
+              </li>
+            </ol>
+          </div>
+
+          <div class="mt-8 flex justify-end gap-3">
+            <button
+              type="button"
+              class="px-5 py-2.5 text-sm font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
+              @click="isExpandModalOpen = false"
+            >
+              关闭
+            </button>
+            <button
+              type="button"
+              class="px-5 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50"
+              :disabled="expandLoading || !expandTargetOutline || !expandTargetOutline.id"
+              @click="performExpandOutline"
+            >
+              {{ expandLoading ? '展开中...' : '展开大纲' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, h } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, h, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import { NovelAPI } from '@/api/novel'
 import { AdminAPI } from '@/api/admin'
-import type { NovelProject, NovelSectionResponse, NovelSectionType } from '@/api/novel'
+import type { NovelProject, NovelSectionResponse, NovelSectionType, ChapterOutline, OutlineExpansionResponse, OutlineChaptersResponse, ChapterPlanItem } from '@/api/novel'
 import BlueprintEditModal from '@/components/BlueprintEditModal.vue'
 import OverviewSection from '@/components/novel-detail/OverviewSection.vue'
 import WorldSettingSection from '@/components/novel-detail/WorldSettingSection.vue'
@@ -238,12 +704,15 @@ import CharactersSection from '@/components/novel-detail/CharactersSection.vue'
 import RelationshipsSection from '@/components/novel-detail/RelationshipsSection.vue'
 import ChapterOutlineSection from '@/components/novel-detail/ChapterOutlineSection.vue'
 import ChaptersSection from '@/components/novel-detail/ChaptersSection.vue'
+import WDEditChapterModal from '@/components/writing-desk/WDEditChapterModal.vue'
 
 interface Props {
   isAdmin?: boolean
 }
 
 type SectionKey = NovelSectionType
+
+type PlanFieldKey = 'plot_summary' | 'narrative_goal' | 'key_events' | 'scenes' | 'character_focus'
 
 const props = withDefaults(defineProps<Props>(), {
   isAdmin: false
@@ -261,7 +730,7 @@ const sections: Array<{ key: SectionKey; label: string; description: string }> =
   { key: 'world_setting', label: '世界设定', description: '规则、地点与阵营' },
   { key: 'characters', label: '主要角色', description: '人物性格与目标' },
   { key: 'relationships', label: '人物关系', description: '角色之间的联系' },
-  { key: 'chapter_outline', label: '章节大纲', description: props.isAdmin ? '故事章节规划' : '故事结构规划' },
+  { key: 'chapter_outline', label: '大纲管理', description: props.isAdmin ? '故事章节规划' : '故事结构规划' },
   { key: 'chapters', label: '章节内容', description: props.isAdmin ? '生成章节与正文' : '生成状态与摘要' }
 ]
 
@@ -348,6 +817,117 @@ const isAddChapterModalOpen = ref(false)
 const newChapterTitle = ref('')
 const newChapterSummary = ref('')
 const originalBodyOverflow = ref('')
+
+// Single chapter outline edit modal (user mode only)
+const isChapterEditModalOpen = ref(false)
+const editingChapterOutline = ref<ChapterOutline | null>(null)
+
+// Expansion plan field inline edit (user mode only)
+const planEditField = ref<PlanFieldKey | null>(null)
+const planEditRaw = ref('')
+const planEditChapterNumber = ref<number | null>(null)
+const planEditPlanIndex = ref<number | null>(null)
+const planEditSaving = ref(false)
+
+const planEditTextarea = ref<HTMLTextAreaElement | null>(null)
+
+const resizePlanEditTextarea = () => {
+  const el = planEditTextarea.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
+
+watch(planEditRaw, () => {
+  nextTick(resizePlanEditTextarea)
+})
+
+const isEditingPlanField = (field: PlanFieldKey, index: number) =>
+  planEditField.value === field && planEditPlanIndex.value === index
+
+const openPlanFieldEditor = (plan: ChapterPlanItem, field: PlanFieldKey, index: number) => {
+  const chapters = existingExpansion.value?.chapters || []
+  const chapterMeta = chapters[index]
+
+  planEditField.value = field
+
+  const rawValue = (plan as any)[field]
+  if (Array.isArray(rawValue)) {
+    planEditRaw.value = rawValue.join('\n')
+  } else {
+    planEditRaw.value = rawValue || ''
+  }
+
+  planEditChapterNumber.value = chapterMeta?.chapter_number ?? null
+  planEditPlanIndex.value = index
+  nextTick(resizePlanEditTextarea)
+}
+
+const cancelPlanEdit = () => {
+  planEditField.value = null
+  planEditPlanIndex.value = null
+  planEditRaw.value = ''
+  planEditChapterNumber.value = null
+}
+
+const savePlanEdit = async () => {
+  if (planEditSaving.value) return
+  planEditSaving.value = true
+  try {
+    if (!planEditField.value || planEditChapterNumber.value == null || planEditPlanIndex.value == null) {
+      return
+    }
+
+    const expansion = existingExpansion.value
+    if (!expansion || !expansion.expansion_plans || !expansion.expansion_plans[planEditPlanIndex.value]) {
+      return
+    }
+
+    const originalPlan = expansion.expansion_plans[planEditPlanIndex.value]
+
+    let newValue: any = planEditRaw.value
+    if (['key_events', 'scenes', 'character_focus'].includes(planEditField.value)) {
+      newValue = planEditRaw.value
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+    }
+
+    const updatedPlan: ChapterPlanItem = {
+      ...originalPlan,
+      [planEditField.value]: newValue
+    }
+
+    await NovelAPI.updateChapterExpansionPlan(projectId, planEditChapterNumber.value, updatedPlan)
+
+    // 同步更新本地预览数据
+    expansion.expansion_plans.splice(planEditPlanIndex.value, 1, updatedPlan)
+  } catch (error) {
+    console.error('保存变更失败:', error)
+  } finally {
+    planEditSaving.value = false
+    cancelPlanEdit()
+  }
+}
+
+// Outline expansion modal (user mode only)
+const isExpandModalOpen = ref(false)
+const expandTargetOutline = ref<ChapterOutline | null>(null)
+const expandTargetCount = ref(3)
+const expandStrategy = ref<'balanced' | 'climax' | 'detail'>('balanced')
+const enableSceneAnalysis = ref(false)
+const autoCreateChapters = ref(true)
+const expandLoading = ref(false)
+const expandResult = ref<OutlineExpansionResponse | null>(null)
+
+// Existing expanded chapters preview
+const isExpandPreviewModalOpen = ref(false)
+const existingExpansion = ref<OutlineChaptersResponse | null>(null)
+const previewActiveIndex = ref(0)
+const deleteExpandedLoading = ref(false)
+
+// 当前正在检查是否已有展开章节的大纲 ID（仅用户模式）
+const checkingOutlineId = ref<number | null>(null)
 
 const novel = computed(() => !props.isAdmin ? novelStore.currentProject as NovelProject | null : null)
 
@@ -451,7 +1031,7 @@ const componentProps = computed(() => {
     case 'relationships':
       return { data: data || null, editable }
     case 'chapter_outline':
-      return { outline: data?.chapter_outline || [], editable }
+      return { outline: data?.chapter_outline || [], editable, checkingOutlineId: checkingOutlineId.value }
     case 'chapters':
       return { chapters: data?.chapters || [], isAdmin: props.isAdmin }
     default:
@@ -547,6 +1127,135 @@ const saveNewChapter = async () => {
     isAddChapterModalOpen.value = false
   } catch (error) {
     console.error('新增章节失败:', error)
+  }
+}
+
+const openEditChapterOutline = (outline: any) => {
+  if (props.isAdmin) return
+  editingChapterOutline.value = {
+    id: outline.id,
+    chapter_number: outline.chapter_number,
+    title: outline.title || '',
+    summary: outline.summary || ''
+  }
+  isChapterEditModalOpen.value = true
+}
+
+const handleChapterOutlineSave = async (updated: ChapterOutline) => {
+  if (props.isAdmin) return
+  await ensureProjectLoaded()
+  try {
+    await novelStore.updateChapterOutline(updated)
+    await loadSection('chapter_outline', true)
+    isChapterEditModalOpen.value = false
+  } catch (error) {
+    console.error('更新章节大纲失败:', error)
+  }
+}
+
+const handleChapterOutlineDelete = async (chapterNumber: number) => {
+  if (props.isAdmin) return
+  if (!window.confirm('确定删除该章节大纲以及对应章节吗？')) return
+  await ensureProjectLoaded()
+  try {
+    await novelStore.deleteChapter(chapterNumber)
+    await loadSection('chapter_outline', true)
+    await loadSection('chapters', true)
+  } catch (error) {
+    console.error('删除章节失败:', error)
+  }
+}
+
+const startExpandOutline = async (outline: ChapterOutline) => {
+  if (props.isAdmin) return
+  expandTargetOutline.value = outline
+
+  if (!projectId || !outline.id) {
+    // 缺少必要 ID 时退化为直接展开配置
+    expandTargetCount.value = 3
+    expandStrategy.value = 'balanced'
+    enableSceneAnalysis.value = false
+    autoCreateChapters.value = true
+    expandResult.value = null
+    isExpandModalOpen.value = true
+    return
+  }
+
+  try {
+    checkingOutlineId.value = outline.id
+    const existing = await NovelAPI.getOutlineChapters(projectId, outline.id)
+    if (existing.has_chapters && existing.expansion_plans && existing.expansion_plans.length > 0) {
+      existingExpansion.value = existing
+      previewActiveIndex.value = 0
+      isExpandPreviewModalOpen.value = true
+      return
+    }
+  } catch (error) {
+    console.error('检查已展开章节失败:', error)
+    // 检查失败时不阻塞用户，继续走普通展开流程
+  } finally {
+    checkingOutlineId.value = null
+  }
+
+  expandTargetCount.value = 3
+  expandStrategy.value = 'balanced'
+  enableSceneAnalysis.value = false
+  autoCreateChapters.value = true
+  expandResult.value = null
+  isExpandModalOpen.value = true
+}
+
+const handleDeleteExpandedChapters = async () => {
+  if (props.isAdmin) return
+  if (!existingExpansion.value || !existingExpansion.value.chapter_count) {
+    isExpandPreviewModalOpen.value = false
+    return
+  }
+
+  if (!window.confirm(`此操作将删除当前大纲已展开的所有 ${existingExpansion.value.chapter_count} 个章节，章节内容删除后无法恢复，确认继续？`)) {
+    return
+  }
+
+  await ensureProjectLoaded()
+  const chapterNumbers = existingExpansion.value.chapters.map(ch => ch.chapter_number)
+  if (!chapterNumbers.length || !projectId) {
+    return
+  }
+
+  deleteExpandedLoading.value = true
+  try {
+    await novelStore.deleteChapter(chapterNumbers)
+    await loadSection('chapter_outline', true)
+    await loadSection('chapters', true)
+    isExpandPreviewModalOpen.value = false
+  } catch (error) {
+    console.error('删除展开章节失败:', error)
+  } finally {
+    deleteExpandedLoading.value = false
+  }
+}
+
+const performExpandOutline = async () => {
+  if (props.isAdmin) return
+  if (!projectId || !expandTargetOutline.value || !expandTargetOutline.value.id) {
+    alert('当前大纲缺少必要信息，无法展开')
+    return
+  }
+  expandLoading.value = true
+  try {
+    const response = await NovelAPI.expandOutline(projectId, expandTargetOutline.value.id, {
+      target_chapter_count: expandTargetCount.value,
+      expansion_strategy: expandStrategy.value,
+      enable_scene_analysis: enableSceneAnalysis.value,
+      auto_create_chapters: autoCreateChapters.value
+    })
+    expandResult.value = response
+    await loadSection('chapter_outline', true)
+    await loadSection('chapters', true)
+  } catch (error) {
+    console.error('展开大纲失败:', error)
+  } finally {
+    expandLoading.value = false
   }
 }
 
