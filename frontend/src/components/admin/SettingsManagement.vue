@@ -40,6 +40,20 @@
             </div>
           </template>
           <n-form label-placement="top" class="limit-form">
+            <n-form-item label="自动拆分每条大纲的章节数">
+              <n-input-number
+                v-model:value="autoExpandTarget"
+                :min="1"
+                :max="10"
+                :step="1"
+                placeholder="例如 3 表示每条大纲拆分为 3 章"
+              />
+            </n-form-item>
+            <n-space justify="end" class="mb-4">
+              <n-button type="primary" :loading="autoExpandSaving" @click="saveAutoExpandTarget">
+                保存自动拆分设置
+              </n-button>
+            </n-space>
             <n-form-item label="每次生成章节的候选版本数量">
               <n-input-number
                 v-model:value="chapterVersionCount"
@@ -332,6 +346,7 @@ import {
 import {
   AdminAPI,
   type DailyRequestLimit,
+  type AutoExpandConfig,
   type SystemConfig,
   type SystemConfigUpdatePayload,
   type SystemConfigUpsertPayload,
@@ -351,6 +366,10 @@ const dailyLimitError = ref<string | null>(null)
 // Chapter version settings
 const chapterVersionCount = ref<number | null>(null)
 const chapterVersionSaving = ref(false)
+
+// Auto expand settings
+const autoExpandTarget = ref<number | null>(null)
+const autoExpandSaving = ref(false)
 
 // System config state
 const configs = ref<SystemConfig[]>([])
@@ -416,6 +435,15 @@ const fetchDailyLimit = async () => {
     dailyLimitError.value = err instanceof Error ? err.message : '加载每日限制失败'
   } finally {
     dailyLimitLoading.value = false
+  }
+}
+
+const fetchAutoExpandConfig = async () => {
+  try {
+    const result = await AdminAPI.getAutoExpandConfig()
+    autoExpandTarget.value = result.target_chapter_count
+  } catch (err) {
+    console.error('加载自动拆分配置失败', err)
   }
 }
 
@@ -719,6 +747,7 @@ onMounted(() => {
   fetchDailyLimit()
   fetchConfigs()
   fetchDefaultPlugins()
+  fetchAutoExpandConfig()
 })
 </script>
 

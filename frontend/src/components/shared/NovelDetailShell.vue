@@ -146,7 +146,7 @@
                 v-bind="componentProps"
                 :class="componentContainerClass"
                 @edit="handleSectionEdit"
-                @add="startAddChapter"
+                @add="openOutlineGenerateModal"
                 @expand-outline="startExpandOutline"
                 @edit-chapter="openEditChapterOutline"
                 @delete-chapter="handleChapterOutlineDelete"
@@ -168,57 +168,184 @@
       @save="handleSave"
     />
 
-    <!-- Add Chapter Modal -->
+    <!-- Outline Generate Modal -->
     <transition
       enter-active-class="transition-all duration-300"
       leave-active-class="transition-all duration-300"
       enter-from-class="opacity-0 scale-95"
       leave-to-class="opacity-0 scale-95"
     >
-      <div v-if="isAddChapterModalOpen && !isAdmin" class="fixed inset-0 z-50 flex items-center justify-center px-4">
-        <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" @click="cancelNewChapter"></div>
-        <div class="relative bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 sm:p-8 w-full max-w-lg transform transition-all" @click.stop>
-          <h3 class="text-xl font-bold text-slate-900 mb-6">新增章节大纲</h3>
-          <div class="space-y-5">
+      <div v-if="isOutlineGenerateModalOpen && !isAdmin" class="fixed inset-0 z-50 flex items-center justify-center px-4">
+        <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" @click="closeOutlineGenerateModal"></div>
+        <div class="relative bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 sm:p-8 w-full max-w-2xl transform transition-all" @click.stop>
+          <h3 class="text-xl font-bold text-slate-900 mb-2">生成大纲</h3>
+          <p class="text-sm text-slate-500 mb-6">
+            根据当前项目蓝图生成章节大纲，可选择重新生成完整结构，或在现有大纲基础上续写后续章节。
+          </p>
+
+          <div class="space-y-6">
             <div>
-              <label for="new-chapter-title" class="block text-sm font-semibold text-slate-700 mb-2">
-                章节标题
-              </label>
-              <input
-                id="new-chapter-title"
-                v-model="newChapterTitle"
-                type="text"
-                class="block w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200"
-                placeholder="例如：意外的相遇"
-              >
+              <span class="block text-sm font-semibold text-slate-700 mb-2">生成模式</span>
+              <div class="inline-flex rounded-full bg-slate-100 p-1">
+                <button
+                  type="button"
+                  class="px-4 py-1.5 text-xs sm:text-sm font-medium rounded-full transition-colors duration-200"
+                  :class="outlineGenerateMode === 'new'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-transparent text-slate-600 hover:text-slate-900'"
+                  @click="outlineGenerateMode = 'new'"
+                >
+                  重新生成
+                </button>
+                <button
+                  type="button"
+                  class="ml-1 px-4 py-1.5 text-xs sm:text-sm font-medium rounded-full transition-colors duration-200"
+                  :class="outlineGenerateMode === 'continue'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-transparent text-slate-600 hover:text-slate-900'"
+                  @click="outlineGenerateMode = 'continue'"
+                >
+                  续写大纲
+                </button>
+              </div>
             </div>
-            <div>
-              <label for="new-chapter-summary" class="block text-sm font-semibold text-slate-700 mb-2">
-                章节摘要
-              </label>
-              <textarea
-                id="new-chapter-summary"
-                v-model="newChapterSummary"
-                rows="4"
-                class="block w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200 resize-none"
-                placeholder="简要描述本章发生的主要事件"
-              ></textarea>
+
+            <!-- 重新生成模式 -->
+            <div v-if="outlineGenerateMode === 'new'" class="space-y-4">
+              <div>
+                <label for="outline-new-count" class="block text-sm font-semibold text-slate-700 mb-1">
+                  大纲章节数量
+                </label>
+                <input
+                  id="outline-new-count"
+                  v-model.number="outlineNewTotalChapters"
+                  type="number"
+                  min="1"
+                  max="200"
+                  class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200"
+                  placeholder="例如：20"
+                >
+                <p class="mt-1 text-xs text-slate-400">将从第 1 章开始，重新规划整部作品的章节结构。</p>
+              </div>
+              <div>
+                <label for="outline-new-extra" class="block text-sm font-semibold text-slate-700 mb-1">
+                  其他要求
+                </label>
+                <textarea
+                  id="outline-new-extra"
+                  v-model="outlineNewOtherRequirements"
+                  rows="3"
+                  class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200 resize-none"
+                  placeholder="例如：整体节奏偏快，前期冲突铺垫更多日常细节等"
+                ></textarea>
+              </div>
+              <div>
+                <label for="outline-auto-expand-new" class="block text-sm font-semibold text-slate-700 mb-1">
+                  自动拆分章节数（可选）
+                </label>
+                <input
+                  id="outline-auto-expand-new"
+                  v-model.number="outlineAutoExpandTarget"
+                  type="number"
+                  min="1"
+                  max="10"
+                  class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200"
+                  placeholder="例如：3 表示每条大纲自动拆成 3 章"
+                >
+                <p class="mt-1 text-xs text-slate-400">不填写则使用后台设置的自动拆分章节数。</p>
+              </div>
+            </div>
+
+            <!-- 续写模式 -->
+            <div v-else class="space-y-4">
+              <div>
+                <label for="outline-continue-direction" class="block text-sm font-semibold text-slate-700 mb-1">
+                  故事发展方向
+                </label>
+                <textarea
+                  id="outline-continue-direction"
+                  v-model="outlineContinueStoryDirection"
+                  rows="3"
+                  class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200 resize-none"
+                  placeholder="例如：主线进入对抗阶段，需要逐步升级冲突并埋下结局伏笔"
+                ></textarea>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label for="outline-plot-stage" class="block text-sm font-semibold text-slate-700 mb-1">
+                    情节阶段
+                  </label>
+                  <select
+                    id="outline-plot-stage"
+                    v-model="outlineContinuePlotStage"
+                    class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200"
+                  >
+                    <option value="development">发展阶段（推进矛盾与成长）</option>
+                    <option value="climax">高潮阶段（集中爆发冲突）</option>
+                    <option value="ending">结局阶段（收束线索与情感）</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="outline-continue-count" class="block text-sm font-semibold text-slate-700 mb-1">
+                    续写章节数
+                  </label>
+                  <input
+                    id="outline-continue-count"
+                    v-model.number="outlineContinueChapters"
+                    type="number"
+                    min="1"
+                    max="100"
+                    class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200"
+                    placeholder="例如：5"
+                  >
+                  <p class="mt-1 text-xs text-slate-400">将在现有大纲最后一章之后，继续规划后续若干章节。</p>
+                </div>
+              </div>
+              <div>
+                <label for="outline-continue-extra" class="block text-sm font-semibold text-slate-700 mb-1">
+                  其他要求
+                </label>
+                <textarea
+                  id="outline-continue-extra"
+                  v-model="outlineContinueOtherRequirements"
+                  rows="3"
+                  class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200 resize-none"
+                  placeholder="例如：保持角色成长逻辑一致，适当增加配角线的戏份等"
+                ></textarea>
+              </div>
+              <div>
+                <label for="outline-auto-expand-continue" class="block text-sm font-semibold text-slate-700 mb-1">
+                  自动拆分章节数（可选）
+                </label>
+                <input
+                  id="outline-auto-expand-continue"
+                  v-model.number="outlineAutoExpandTarget"
+                  type="number"
+                  min="1"
+                  max="10"
+                  class="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200"
+                  placeholder="例如：3 表示每条大纲自动拆成 3 章"
+                >
+                <p class="mt-1 text-xs text-slate-400">不填写则使用后台设置的自动拆分章节数。</p>
+              </div>
             </div>
           </div>
+
           <div class="mt-8 flex justify-end gap-3">
             <button
               type="button"
               class="px-5 py-2.5 text-sm font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
-              @click="cancelNewChapter"
+              @click="closeOutlineGenerateModal"
             >
               取消
             </button>
             <button
               type="button"
-              class="px-5 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 rounded-lg shadow-md hover:shadow-lg transition-all duration-200"
-              @click="saveNewChapter"
+              class="px-5 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="outlineGenerateLoading"
+              @click="handleOutlineGenerate"
             >
-              保存
+              {{ outlineGenerateLoading ? '生成中...' : '开始生成' }}
             </button>
           </div>
         </div>
@@ -812,10 +939,17 @@ const modalTitle = ref('')
 const modalContent = ref<any>('')
 const modalField = ref('')
 
-// Add chapter modal state (user mode only)
-const isAddChapterModalOpen = ref(false)
-const newChapterTitle = ref('')
-const newChapterSummary = ref('')
+// Outline generate modal state (user mode only)
+const isOutlineGenerateModalOpen = ref(false)
+const outlineGenerateMode = ref<'new' | 'continue'>('continue')
+const outlineNewTotalChapters = ref<number | null>(null)
+const outlineNewOtherRequirements = ref('')
+const outlineContinueStoryDirection = ref('')
+const outlineContinuePlotStage = ref<'development' | 'climax' | 'ending'>('development')
+const outlineContinueChapters = ref<number | null>(null)
+const outlineContinueOtherRequirements = ref('')
+const outlineAutoExpandTarget = ref<number | null>(null)
+const outlineGenerateLoading = ref(false)
 const originalBodyOverflow = ref('')
 
 // Single chapter outline edit modal (user mode only)
@@ -1088,45 +1222,133 @@ const handleSave = async (data: { field: string; content: any }) => {
   }
 }
 
-const startAddChapter = async () => {
-  if (props.isAdmin) return
-  await ensureProjectLoaded()
-  const outline = sectionData.chapter_outline?.chapter_outline || novel.value?.blueprint?.chapter_outline || []
-  const nextNumber = outline.length > 0 ? Math.max(...outline.map((item: any) => item.chapter_number)) + 1 : 1
-  newChapterTitle.value = `新章节 ${nextNumber}`
-  newChapterSummary.value = ''
-  isAddChapterModalOpen.value = true
-}
-
-const cancelNewChapter = () => {
-  isAddChapterModalOpen.value = false
-}
-
-const saveNewChapter = async () => {
+const openOutlineGenerateModal = async () => {
   if (props.isAdmin) return
   await ensureProjectLoaded()
   const project = novel.value
   if (!project) return
-  if (!newChapterTitle.value.trim()) {
-    alert('章节标题不能为空')
-    return
-  }
 
   const existingOutline = project.blueprint?.chapter_outline || []
-  const nextNumber = existingOutline.length > 0 ? Math.max(...existingOutline.map(ch => ch.chapter_number)) + 1 : 1
-  const newOutline = [...existingOutline, {
-    chapter_number: nextNumber,
-    title: newChapterTitle.value,
-    summary: newChapterSummary.value
-  }]
 
+  if (existingOutline.length > 0) {
+    outlineGenerateMode.value = 'continue'
+    const lastNumber = Math.max(...existingOutline.map(ch => ch.chapter_number))
+    const defaultContinueCount = Math.min(10, Math.max(3, existingOutline.length - lastNumber + 3))
+    outlineContinueChapters.value = defaultContinueCount
+    outlineNewTotalChapters.value = existingOutline.length
+  } else {
+    outlineGenerateMode.value = 'new'
+    outlineNewTotalChapters.value = 20
+    outlineContinueChapters.value = null
+  }
+
+  outlineNewOtherRequirements.value = ''
+  outlineContinueStoryDirection.value = ''
+  outlineContinuePlotStage.value = 'development'
+  outlineContinueOtherRequirements.value = ''
+  outlineAutoExpandTarget.value = null
+
+  isOutlineGenerateModalOpen.value = true
+}
+
+const closeOutlineGenerateModal = () => {
+  isOutlineGenerateModalOpen.value = false
+}
+
+const handleOutlineGenerate = async () => {
+  if (props.isAdmin) return
+  await ensureProjectLoaded()
+  const project = novel.value
+  if (!project) return
+
+  const existingOutline = project.blueprint?.chapter_outline || []
+
+  let startChapter = 1
+  let numChapters = 0
+
+  if (outlineGenerateMode.value === 'new') {
+    if (!outlineNewTotalChapters.value || outlineNewTotalChapters.value <= 0) {
+      alert('请填写有效的大纲章节数量')
+      return
+    }
+    startChapter = 1
+    numChapters = outlineNewTotalChapters.value
+  } else {
+    if (!existingOutline.length) {
+      alert('当前项目暂无章节大纲，无法续写，请先生成完整大纲。')
+      return
+    }
+    if (!outlineContinueChapters.value || outlineContinueChapters.value <= 0) {
+      alert('请填写有效的续写章节数')
+      return
+    }
+    const lastNumber = Math.max(...existingOutline.map(ch => ch.chapter_number))
+    startChapter = lastNumber + 1
+    numChapters = outlineContinueChapters.value
+  }
+
+  if (outlineAutoExpandTarget.value != null) {
+    if (outlineAutoExpandTarget.value <= 0 || outlineAutoExpandTarget.value > 10) {
+      alert('自动拆分章节数需在 1 到 10 之间')
+      return
+    }
+  }
+
+  let storyDirection = ''
+  let plotStage: 'development' | 'climax' | 'ending' = 'development'
+  let keepExisting = true
+
+  if (outlineGenerateMode.value === 'new') {
+    storyDirection = outlineNewOtherRequirements.value.trim()
+    plotStage = 'development'
+    keepExisting = false
+  } else {
+    const baseDirection = outlineContinueStoryDirection.value.trim()
+    const extra = outlineContinueOtherRequirements.value.trim()
+    if (baseDirection && extra) {
+      storyDirection = `${baseDirection}\n其他要求：${extra}`
+    } else if (baseDirection) {
+      storyDirection = baseDirection
+    } else if (extra) {
+      storyDirection = `其他要求：${extra}`
+    }
+    plotStage = outlineContinuePlotStage.value
+    keepExisting = true
+  }
+
+  if (outlineGenerateMode.value === 'new') {
+    const confirmationMessage = '重新生成大纲将清空当前项目的所有章节大纲和章节内容，此操作无法撤销，是否继续？'
+    if (!window.confirm(confirmationMessage)) {
+      return
+    }
+  }
+
+  outlineGenerateLoading.value = true
   try {
-    const updatedProject = await NovelAPI.updateBlueprint(project.id, { chapter_outline: newOutline })
+    const options: any = {
+      mode: outlineGenerateMode.value,
+      story_direction: storyDirection,
+      plot_stage: plotStage,
+      keep_existing: keepExisting
+    }
+    if (outlineAutoExpandTarget.value != null) {
+      options.auto_expand_target_chapter_count = outlineAutoExpandTarget.value
+    }
+
+    const updatedProject = await NovelAPI.generateChapterOutline(
+      project.id,
+      startChapter,
+      numChapters,
+      options
+    )
     novelStore.setCurrentProject(updatedProject)
     await loadSection('chapter_outline', true)
-    isAddChapterModalOpen.value = false
+    await loadSection('overview', true)
+    isOutlineGenerateModalOpen.value = false
   } catch (error) {
-    console.error('新增章节失败:', error)
+    console.error('生成大纲失败:', error)
+  } finally {
+    outlineGenerateLoading.value = false
   }
 }
 

@@ -47,3 +47,7 @@ class AdminNovelSummary(BaseModel):
     last_edited: str
     completed_chapters: int
     total_chapters: int
+
+
+class AutoExpandConfig(BaseModel):
+    target_chapter_count: int = Field(..., ge=1, le=10)

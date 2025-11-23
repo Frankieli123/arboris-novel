@@ -360,14 +360,44 @@ export class NovelAPI {
   static async generateChapterOutline(
     projectId: string,
     startChapter: number,
-    numChapters: number
+    numChapters: number,
+    options?: {
+      mode?: 'auto' | 'new' | 'continue'
+      story_direction?: string
+      plot_stage?: 'development' | 'climax' | 'ending'
+      keep_existing?: boolean
+      auto_expand_target_chapter_count?: number
+    }
   ): Promise<NovelProject> {
+    const payload: any = {
+      start_chapter: startChapter,
+      num_chapters: numChapters
+    }
+
+    if (options) {
+      if (options.mode) {
+        payload.mode = options.mode
+      }
+      if (typeof options.story_direction === 'string' && options.story_direction.trim()) {
+        payload.story_direction = options.story_direction.trim()
+      }
+      if (options.plot_stage) {
+        payload.plot_stage = options.plot_stage
+      }
+      if (typeof options.keep_existing === 'boolean') {
+        payload.keep_existing = options.keep_existing
+      }
+      if (
+        typeof options.auto_expand_target_chapter_count === 'number' &&
+        options.auto_expand_target_chapter_count > 0
+      ) {
+        payload.auto_expand_target_chapter_count = options.auto_expand_target_chapter_count
+      }
+    }
+
     return request(`${WRITER_BASE}/${projectId}/chapters/outline`, {
       method: 'POST',
-      body: JSON.stringify({
-        start_chapter: startChapter,
-        num_chapters: numChapters
-      })
+      body: JSON.stringify(payload)
     })
   }
 

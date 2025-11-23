@@ -181,6 +181,13 @@ class GenerateOutlineRequest(BaseModel):
         default=True,
         description="是否保留现有大纲，仅在部分模式下作为提示信息使用",
     )
+    # （可选）本次自动拆分章节时，每条大纲要拆分成的章节数；若未提供则使用后台配置或默认值
+    auto_expand_target_chapter_count: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=10,
+        description="本次自动拆分时，每条大纲要拆分成的章节数（优先级高于后台配置）",
+    )
 
 
 class BlueprintPatch(BaseModel):

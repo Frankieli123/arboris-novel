@@ -15,6 +15,7 @@ from ...schemas.admin import (
     UpdateLogCreate,
     UpdateLogRead,
     UpdateLogUpdate,
+    AutoExpandConfig,
 )
 from ...schemas.config import SystemConfigCreate, SystemConfigRead, SystemConfigUpdate
 from ...schemas.prompt import PromptCreate, PromptRead, PromptUpdate
@@ -268,6 +269,35 @@ async def update_daily_limit(
 ) -> DailyRequestLimit:
     await service.set("daily_request_limit", str(payload.limit))
     logger.info("管理员设置每日请求上限为 %s", payload.limit)
+    return payload
+
+
+@router.get("/settings/auto-expand", response_model=AutoExpandConfig)
+async def get_auto_expand_config(
+    service: AdminSettingService = Depends(get_admin_setting_service),
+    _: None = Depends(get_current_admin),
+) -> AutoExpandConfig:
+    value = await service.get("auto_expand_target_chapter_count", "3")
+    logger.info("管理员查询自动章节拆分配置：target_chapter_count=%s", value)
+    try:
+        target = int(value or 3)
+    except (TypeError, ValueError):
+        target = 3
+    if target < 1:
+        target = 1
+    if target > 10:
+        target = 10
+    return AutoExpandConfig(target_chapter_count=target)
+
+
+@router.put("/settings/auto-expand", response_model=AutoExpandConfig)
+async def update_auto_expand_config(
+    payload: AutoExpandConfig,
+    service: AdminSettingService = Depends(get_admin_setting_service),
+    _: None = Depends(get_current_admin),
+) -> AutoExpandConfig:
+    await service.set("auto_expand_target_chapter_count", str(payload.target_chapter_count))
+    logger.info("管理员设置自动章节拆分数为 %s", payload.target_chapter_count)
     return payload
 
 

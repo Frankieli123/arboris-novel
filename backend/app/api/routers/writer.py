@@ -37,6 +37,7 @@ from ...services.prompt_service import PromptService
 from ...services.vector_store_service import VectorStoreService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 from ...repositories.system_config_repository import SystemConfigRepository
+from .novels import _auto_expand_chapter_outlines
 
 router = APIRouter(prefix="/api/writer", tags=["Writer"])
 logger = logging.getLogger(__name__)
@@ -732,10 +733,13 @@ async def generate_chapter_outline(
 
     new_outlines = data.get("chapters", [])
 
-    # new 模式：按 MuMu 行为清空旧大纲后整体写入新的章节大纲
+    # new 模式：按 MuMu 行为清空旧大纲后整体写入新的章节大纲；同时清空所有已有章节
     if actual_mode == "new":
         await session.execute(
             delete(ChapterOutline).where(ChapterOutline.project_id == project_id)
+        )
+        await session.execute(
+            delete(Chapter).where(Chapter.project_id == project_id)
         )
     for item in new_outlines:
         stmt = (
@@ -761,6 +765,31 @@ async def generate_chapter_outline(
             )
     await session.commit()
     logger.info("项目 %s 章节大纲生成完成，新增/更新大纲数 %s，模式 %s", project_id, len(new_outlines), actual_mode)
+
+    # 解析本次请求中是否指定了自动拆分每条大纲的章节数
+    auto_expand_target = getattr(request, "auto_expand_target_chapter_count", None)
+
+    # 在全新生成 / 续写模式下，根据最新章节大纲自动拆分章节
+    if actual_mode in ("new", "continue"):
+        try:
+            kwargs = {}
+            if auto_expand_target is not None:
+                kwargs["target_chapter_count"] = auto_expand_target
+                kwargs["use_admin_setting"] = False
+
+            await _auto_expand_chapter_outlines(
+                project_id=project_id,
+                session=session,
+                current_user=current_user,
+                mcp_registry=mcp_registry,
+                **kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "项目 %s 重新生成章节大纲后自动拆分章节失败，将继续返回项目数据: %s",
+                project_id,
+                exc,
+            )
 
     return await novel_service.get_project_schema(project_id, current_user.id)
 

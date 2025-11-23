@@ -30,6 +30,7 @@ from ...services.llm_service import LLMService
 from ...services.mcp_tool_service import MCPToolService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
+from ...services.admin_setting_service import AdminSettingService
 from ...utils.json_utils import remove_think_tags, sanitize_json_like_text, unwrap_markdown_json
 
 logger = logging.getLogger(__name__)
@@ -457,6 +458,7 @@ async def _auto_expand_chapter_outlines(
     target_chapter_count: int = 3,
     expansion_strategy: str = "balanced",
     enable_scene_analysis: bool = False,
+    use_admin_setting: bool = True,
 ) -> None:
     """根据当前蓝图中的章节大纲，自动拆分为章节规划并创建章节记录。
 
@@ -468,13 +470,34 @@ async def _auto_expand_chapter_outlines(
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
 
+    # 默认从后台 Admin 设置中读取自动拆分章节数（auto_expand_target_chapter_count），
+    # 但当调用方显式指定 target_chapter_count 且希望优先使用该值时，可通过
+    # use_admin_setting=False 跳过这一覆盖逻辑。
+    if use_admin_setting:
+        admin_setting_service = AdminSettingService(session)
+        config_value = await admin_setting_service.get("auto_expand_target_chapter_count")
+        if config_value is not None:
+            try:
+                parsed = int(str(config_value).strip())
+                if parsed > 0:
+                    target_chapter_count = parsed
+            except (TypeError, ValueError):
+                logger.warning(
+                    "自动拆分章节数配置值无效：%s，将继续使用默认值 %s",
+                    config_value,
+                    target_chapter_count,
+                )
+
     result = await session.execute(
         select(func.count(Chapter.id)).where(Chapter.project_id == project_id)
     )
     chapter_count = result.scalar() or 0
     if chapter_count > 0:
-        logger.info("项目 %s 已存在 %s 个章节记录，跳过自动章节拆分", project_id, chapter_count)
-        return
+        logger.info(
+            "项目 %s 已存在 %s 个章节记录，本次仅为尚未绑定章节的大纲尝试自动拆分",
+            project_id,
+            chapter_count,
+        )
 
     project_schema = await novel_service.get_project_schema(project_id, current_user.id)
     blueprint = project_schema.blueprint
@@ -496,6 +519,11 @@ async def _auto_expand_chapter_outlines(
     if not outlines:
         logger.info("项目 %s 没有可用的章节大纲记录，跳过自动章节拆分", project_id)
         return
+
+    result = await session.execute(
+        select(Chapter.outline_id).where(Chapter.project_id == project_id)
+    )
+    existing_outline_ids = {row[0] for row in result if row[0] is not None}
 
     sorted_outline_dicts = sorted(
         chapter_outline_dicts,
@@ -541,6 +569,14 @@ async def _auto_expand_chapter_outlines(
     total_created = 0
 
     for outline in outlines:
+        if existing_outline_ids and outline.id in existing_outline_ids:
+            logger.info(
+                "项目 %s 大纲 %s 已存在关联章节，跳过自动拆分",
+                project_id,
+                outline.id,
+            )
+            continue
+
         current_ch_no = outline.chapter_number
 
         prev_outline_desc = ""
