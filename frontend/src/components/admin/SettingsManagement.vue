@@ -447,6 +447,22 @@ const fetchAutoExpandConfig = async () => {
   }
 }
 
+const saveAutoExpandTarget = async () => {
+  if (autoExpandTarget.value === null || autoExpandTarget.value <= 0) {
+    showAlert('请设置有效的自动拆分章节数', 'error')
+    return
+  }
+  autoExpandSaving.value = true
+  try {
+    await AdminAPI.setAutoExpandConfig(autoExpandTarget.value)
+    showAlert('自动拆分设置已更新', 'success')
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+  } finally {
+    autoExpandSaving.value = false
+  }
+}
+
 const saveDailyLimit = async () => {
   if (dailyLimit.value === null || dailyLimit.value < 0) {
     showAlert('请设置有效的每日额度', 'error')
