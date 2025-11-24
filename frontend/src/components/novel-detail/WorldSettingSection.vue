@@ -17,6 +17,25 @@
       <p class="text-slate-600 leading-7 whitespace-pre-line">{{ worldSetting.core_rules || '暂无' }}</p>
     </div>
 
+    <div class="bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-6">
+      <div class="flex items-start justify-between gap-4 mb-4">
+        <h3 class="text-lg font-semibold text-slate-900">时间设定</h3>
+        <button
+          v-if="editable"
+          type="button"
+          class="text-gray-400 hover:text-indigo-600 transition-colors"
+          @click="emitEdit('world_setting.time_period', '时间设定', worldSetting.time_period)">
+          <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+            <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+      <p class="text-slate-600 leading-7 whitespace-pre-line">
+        {{ worldSetting.time_period || '暂无时间设定' }}
+      </p>
+    </div>
+
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div class="bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-6">
         <div class="flex items-center justify-between mb-4">

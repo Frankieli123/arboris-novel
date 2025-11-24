@@ -81,6 +81,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { getUserGeneralSettings, updateUserGeneralSettings, type UserGeneralSettings } from '@/api/userSettings'
+import { useAlert } from '@/composables/useAlert'
+
+const { showAlert } = useAlert()
 
 const settings = ref<UserGeneralSettings>({
   auto_expand_enabled: false,
@@ -98,6 +101,7 @@ const loadSettings = async () => {
     settings.value = data
   } catch (err) {
     console.error('加载常规设置失败', err)
+    await showAlert('加载常规设置失败，请稍后再试', 'error')
   } finally {
     loading.value = false
   }
@@ -121,10 +125,13 @@ const handleSave = async () => {
     }
 
     await updateUserGeneralSettings(settings.value)
-    alert('常规设置已保存，对当前账号立即生效！')
+    await showAlert('常规设置已保存，对当前账号立即生效！', 'success')
   } catch (err) {
     console.error('保存常规设置失败', err)
-    alert(err instanceof Error ? err.message : '保存失败，请稍后再试')
+    await showAlert(
+      err instanceof Error ? err.message : '保存失败，请稍后再试',
+      'error',
+    )
   } finally {
     saving.value = false
   }

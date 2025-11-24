@@ -308,6 +308,18 @@ const formattedBlueprint = computed(() => {
       `
     }
 
+    if (worldSetting.time_period) {
+      html += `
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+          <h4 class="font-semibold text-blue-800 mb-2 flex items-center">
+            <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 01.993.883L11 3v6h3a1 1 0 01.117 1.993L14 11h-4a1 1 0 01-.993-.883L9 10V3a1 1 0 011-1z"></path><path d="M10 18a8 8 0 110-16 8 8 0 010 16z"></path></svg>
+            时间设定
+          </h4>
+          <p class="text-blue-700">${worldSetting.time_period}</p>
+        </div>
+      `
+    }
+
     if (worldSetting.key_locations && worldSetting.key_locations.length > 0) {
       html += `
         <div class="mb-4">

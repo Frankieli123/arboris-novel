@@ -95,6 +95,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { getLLMConfig, createOrUpdateLLMConfig, deleteLLMConfig, type LLMConfigCreate } from '@/api/llm';
+import { useAlert } from '@/composables/useAlert';
+
+const { showAlert } = useAlert();
 
 const config = ref<LLMConfigCreate>({
   llm_provider_url: '',
@@ -116,19 +119,43 @@ onMounted(async () => {
 });
 
 const handleSave = async () => {
-  await createOrUpdateLLMConfig(config.value);
-  alert('设置已保存！');
+  try {
+    await createOrUpdateLLMConfig(config.value);
+    await showAlert('LLM 设置已保存！', 'success');
+  } catch (err) {
+    console.error('保存 LLM 设置失败', err);
+    await showAlert(
+      err instanceof Error ? err.message : '保存失败，请稍后再试',
+      'error',
+    );
+  }
 };
 
 const handleDelete = async () => {
-  if (confirm('确定要删除您的自定义LLM配置吗？删除后将恢复为默认配置。')) {
+  const confirmed = await showAlert(
+    '确定要删除您的自定义 LLM 配置吗？删除后将恢复为默认配置。',
+    'confirmation',
+    '请确认',
+    { showCancel: true },
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  try {
     await deleteLLMConfig();
     config.value = {
       llm_provider_url: '',
       llm_provider_api_key: '',
       llm_provider_model: '',
     };
-    alert('配置已删除！');
+    await showAlert('配置已删除！', 'success');
+  } catch (err) {
+    console.error('删除 LLM 配置失败', err);
+    await showAlert(
+      err instanceof Error ? err.message : '删除失败，请稍后再试',
+      'error',
+    );
   }
 };
 
