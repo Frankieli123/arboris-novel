@@ -40,6 +40,18 @@
             </div>
           </template>
           <n-form label-placement="top" class="limit-form">
+            <n-form-item label="生成蓝图后是否自动拆分章节">
+              <n-space align="center">
+                <n-switch v-model:value="autoExpandEnabled" />
+                <span>
+                  {{
+                    autoExpandEnabled
+                      ? '开启后，生成蓝图会自动根据章节大纲拆分章节'
+                      : '关闭后，只生成蓝图，不自动拆分章节'
+                  }}
+                </span>
+              </n-space>
+            </n-form-item>
             <n-form-item label="自动拆分每条大纲的章节数">
               <n-input-number
                 v-model:value="autoExpandTarget"
@@ -169,6 +181,29 @@
                   </div>
 
                   <n-space size="small">
+                    <n-button
+                      size="small"
+                      tertiary
+                      @click="() => viewTools(plugin)"
+                    >
+                      查看工具
+                    </n-button>
+                    <n-button
+                      size="small"
+                      tertiary
+                      type="info"
+                      @click="() => testPlugin(plugin.id)"
+                    >
+                      测试连接
+                    </n-button>
+                    <n-button
+                      size="small"
+                      tertiary
+                      type="primary"
+                      @click="() => openEditPluginModal(plugin)"
+                    >
+                      编辑
+                    </n-button>
                     <n-popconfirm
                       :positive-text="'删除'"
                       :negative-text="'取消'"
@@ -315,6 +350,137 @@
       </template>
     </n-result>
   </n-modal>
+
+  <n-modal
+    v-model:show="testModalVisible"
+    preset="card"
+    title="默认插件测试结果"
+    class="test-modal"
+    :style="{ width: '560px', maxWidth: '92vw' }"
+  >
+    <n-spin :show="testing">
+      <n-result
+        v-if="testReport"
+        :status="testReport.success ? 'success' : 'error'"
+        :title="testReport.success ? '测试成功' : '测试失败'"
+        :description="testReport.message"
+      >
+        <template #footer>
+          <n-space vertical>
+            <n-descriptions :column="1" bordered size="small">
+              <n-descriptions-item label="工具数量">
+                {{ testReport.tools_count }}
+              </n-descriptions-item>
+              <n-descriptions-item v-if="testReport.error" label="错误信息">
+                {{ testReport.error }}
+              </n-descriptions-item>
+            </n-descriptions>
+            <n-card v-if="testReport.suggestions.length > 0" title="建议" size="small">
+              <n-ul>
+                <n-li v-for="(suggestion, index) in testReport.suggestions" :key="index">
+                  {{ suggestion }}
+                </n-li>
+              </n-ul>
+            </n-card>
+          </n-space>
+        </template>
+      </n-result>
+    </n-spin>
+  </n-modal>
+
+  <n-modal
+    v-model:show="toolsModalVisible"
+    preset="card"
+    :title="currentToolsPlugin ? `工具列表 - ${currentToolsPlugin.display_name}` : '工具列表'"
+    class="tools-modal"
+    :style="{ width: '720px', maxWidth: '92vw' }"
+  >
+    <n-spin :show="toolsLoading">
+      <n-result
+        v-if="!toolsLoading && tools.length === 0"
+        status="info"
+        title="暂无工具"
+        description="该插件未提供任何工具定义"
+      />
+      <n-space v-else vertical size="small">
+        <n-card
+          v-for="tool in tools"
+          :key="tool.function.name"
+          size="small"
+        >
+          <template #header>
+            <n-space justify="space-between">
+              <span>{{ tool.function.name }}</span>
+              <n-tag size="small" type="info">
+                {{ tool.type }}
+              </n-tag>
+            </n-space>
+          </template>
+          <div v-if="tool.function.description" style="margin-bottom: 8px">
+            {{ tool.function.description }}
+          </div>
+          <pre
+            v-if="tool.function.parameters"
+            style="max-height: 200px; overflow: auto; font-size: 12px"
+          >{{ formatParameters(tool.function.parameters) }}</pre>
+        </n-card>
+      </n-space>
+    </n-spin>
+  </n-modal>
+
+  <n-modal
+    v-model:show="pluginEditModalVisible"
+    preset="card"
+    title="编辑默认插件"
+    class="plugin-modal"
+    :style="{ width: '720px', maxWidth: '92vw' }"
+  >
+    <n-form label-placement="top">
+      <n-form-item label="插件标识符 (plugin_name)">
+        <n-input v-model:value="pluginForm.plugin_name" disabled />
+      </n-form-item>
+      <n-form-item label="显示名称">
+        <n-input v-model:value="pluginForm.display_name" />
+      </n-form-item>
+      <n-form-item label="服务器地址">
+        <n-input v-model:value="pluginForm.server_url" />
+      </n-form-item>
+      <n-form-item label="分类">
+        <n-select
+          v-model:value="pluginForm.category"
+          :options="categoryOptions"
+          placeholder="选择插件分类"
+        />
+      </n-form-item>
+      <n-form-item label="启用状态">
+        <n-switch v-model:value="pluginForm.enabled" />
+      </n-form-item>
+      <n-form-item label="Headers JSON">
+        <n-input
+          v-model:value="headersJson"
+          type="textarea"
+          :rows="4"
+          placeholder="可选，JSON 对象，例如 { &quot;Authorization&quot;: &quot;Bearer ...&quot; }"
+        />
+      </n-form-item>
+      <n-form-item label="Config JSON">
+        <n-input
+          v-model:value="configJson"
+          type="textarea"
+          :rows="6"
+          placeholder="可选，插件自定义配置 JSON"
+        />
+      </n-form-item>
+    </n-form>
+    <template #footer>
+      <n-space justify="end">
+        <n-button quaternary @click="closeEditPluginModal">取消</n-button>
+        <n-button type="primary" :loading="editSaving" @click="submitEditPlugin">
+          保存
+        </n-button>
+      </n-space>
+    </template>
+  </n-modal>
 </template>
 
 <script setup lang="ts">
@@ -324,6 +490,8 @@ import {
   NButton,
   NCard,
   NDataTable,
+  NDescriptions,
+  NDescriptionsItem,
   NForm,
   NFormItem,
   NInput,
@@ -354,6 +522,7 @@ import {
   type MCPPluginCreate
 } from '@/api/admin'
 import { useAlert } from '@/composables/useAlert'
+import { MCPAPI, type PluginTestReport, type ToolDefinition } from '@/api/mcp'
 
 const { showAlert } = useAlert()
 
@@ -368,6 +537,7 @@ const chapterVersionCount = ref<number | null>(null)
 const chapterVersionSaving = ref(false)
 
 // Auto expand settings
+const autoExpandEnabled = ref<boolean>(false)
 const autoExpandTarget = ref<number | null>(null)
 const autoExpandSaving = ref(false)
 
@@ -409,6 +579,23 @@ const pluginImportCategory = ref<string | null>(null)
 const pluginResultModalVisible = ref(false)
 const pluginImportResult = ref<any>(null)
 
+const testModalVisible = ref(false)
+const testing = ref(false)
+const testReport = ref<PluginTestReport | null>(null)
+
+const toolsModalVisible = ref(false)
+const toolsLoading = ref(false)
+const tools = ref<ToolDefinition[]>([])
+const currentToolsPlugin = ref<MCPPlugin | null>(null)
+
+const pluginEditModalVisible = ref(false)
+const editSaving = ref(false)
+
+const headersJson = ref('')
+const configJson = ref('')
+
+const formatParameters = (params: Record<string, any>) => JSON.stringify(params, null, 2)
+
 const categoryOptions = [
   { label: '搜索类 (Search) - 网络搜索、信息查询', value: 'search' },
   { label: '文件系统 (Filesystem) - 文件读写、目录操作', value: 'filesystem' },
@@ -441,6 +628,7 @@ const fetchDailyLimit = async () => {
 const fetchAutoExpandConfig = async () => {
   try {
     const result = await AdminAPI.getAutoExpandConfig()
+    autoExpandEnabled.value = result.enabled
     autoExpandTarget.value = result.target_chapter_count
   } catch (err) {
     console.error('加载自动拆分配置失败', err)
@@ -454,7 +642,10 @@ const saveAutoExpandTarget = async () => {
   }
   autoExpandSaving.value = true
   try {
-    await AdminAPI.setAutoExpandConfig(autoExpandTarget.value)
+    await AdminAPI.setAutoExpandConfig({
+      enabled: autoExpandEnabled.value,
+      target_chapter_count: autoExpandTarget.value as number
+    })
     showAlert('自动拆分设置已更新', 'success')
   } catch (err) {
     showAlert(err instanceof Error ? err.message : '保存失败', 'error')
@@ -692,6 +883,106 @@ const toggleDefaultPlugin = async (plugin: MCPPlugin) => {
   }
 }
 
+const openEditPluginModal = (plugin: MCPPlugin) => {
+  pluginForm.id = plugin.id
+  pluginForm.plugin_name = plugin.plugin_name
+  pluginForm.display_name = plugin.display_name
+  pluginForm.plugin_type = plugin.plugin_type
+  pluginForm.server_url = plugin.server_url
+  pluginForm.headers = plugin.headers || null
+  pluginForm.enabled = plugin.enabled
+  pluginForm.category = plugin.category || null
+  pluginForm.config = plugin.config || null
+  headersJson.value = plugin.headers ? JSON.stringify(plugin.headers, null, 2) : ''
+  configJson.value = plugin.config ? JSON.stringify(plugin.config, null, 2) : ''
+  pluginEditModalVisible.value = true
+}
+
+const closeEditPluginModal = () => {
+  pluginEditModalVisible.value = false
+  editSaving.value = false
+}
+
+const submitEditPlugin = async () => {
+  if (!pluginForm.id) {
+    showAlert('缺少插件ID，无法保存', 'error')
+    return
+  }
+
+  if (headersJson.value.trim()) {
+    try {
+      pluginForm.headers = JSON.parse(headersJson.value)
+    } catch {
+      showAlert('Headers JSON 格式错误', 'error')
+      return
+    }
+  } else {
+    pluginForm.headers = null
+  }
+
+  if (configJson.value.trim()) {
+    try {
+      pluginForm.config = JSON.parse(configJson.value)
+    } catch {
+      showAlert('Config JSON 格式错误', 'error')
+      return
+    }
+  } else {
+    pluginForm.config = null
+  }
+
+  editSaving.value = true
+  try {
+    const updated = await AdminAPI.updateDefaultMCPPlugin(pluginForm.id, {
+      display_name: pluginForm.display_name,
+      server_url: pluginForm.server_url,
+      headers: pluginForm.headers || null,
+      enabled: pluginForm.enabled,
+      category: pluginForm.category || null,
+      config: pluginForm.config || null
+    })
+    const index = defaultPlugins.value.findIndex((p) => p.id === updated.id)
+    if (index !== -1) {
+      defaultPlugins.value.splice(index, 1, updated)
+    }
+    showAlert('默认插件已更新', 'success')
+    closeEditPluginModal()
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '更新失败', 'error')
+  } finally {
+    editSaving.value = false
+  }
+}
+
+const viewTools = async (plugin: MCPPlugin) => {
+  toolsModalVisible.value = true
+  toolsLoading.value = true
+  currentToolsPlugin.value = plugin
+  tools.value = []
+  try {
+    tools.value = await MCPAPI.getPluginTools(plugin.id)
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '获取工具列表失败', 'error')
+    toolsModalVisible.value = false
+  } finally {
+    toolsLoading.value = false
+  }
+}
+
+const testPlugin = async (id: number) => {
+  testing.value = true
+  testReport.value = null
+  testModalVisible.value = true
+  try {
+    testReport.value = await MCPAPI.testPlugin(id)
+  } catch (err) {
+    showAlert(err instanceof Error ? err.message : '测试失败', 'error')
+    testModalVisible.value = false
+  } finally {
+    testing.value = false
+  }
+}
+
 const columns: DataTableColumns<SystemConfig> = [
   {
     title: 'Key',
@@ -761,17 +1052,14 @@ const columns: DataTableColumns<SystemConfig> = [
 
 onMounted(() => {
   fetchDailyLimit()
+  fetchAutoExpandConfig()
   fetchConfigs()
   fetchDefaultPlugins()
-  fetchAutoExpandConfig()
 })
+
 </script>
 
 <style scoped>
-.admin-settings {
-  width: 100%;
-}
-
 .card-header {
   display: flex;
   align-items: center;

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from . import admin, auth, llm_config, mcp_plugins, novels, updates, writer
+from . import admin, auth, llm_config, mcp_plugins, novels, updates, user_settings, writer
 
 api_router = APIRouter()
 
@@ -11,3 +11,4 @@ api_router.include_router(admin.router)
 api_router.include_router(updates.router)
 api_router.include_router(llm_config.router)
 api_router.include_router(mcp_plugins.router)
+api_router.include_router(user_settings.router)

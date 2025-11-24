@@ -160,6 +160,14 @@ CREATE TABLE IF NOT EXISTS admin_settings (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id INT NOT NULL,
+    `key` VARCHAR(64) NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (user_id, `key`),
+    CONSTRAINT fk_user_settings_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS user_daily_requests (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,

@@ -1,9 +1,12 @@
 """MCP 插件测试服务。
 
-使用 AI 智能生成测试用例.
+参考 MuMu 项目的测试行为：
+- 主要验证 MCP 插件的连接与工具列表获取是否正常
+- 不在此处执行复杂的 AI 测试用例与多轮调用，保持测试快速、可靠
 """
 import json
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,14 +55,12 @@ class MCPTestService:
     async def test_plugin(
         self, user_id: int, plugin_id: int
     ) -> PluginTestReport:
-        """测试插件连接和功能。
+        """测试插件连接和工具列表获取情况（MuMu 风格的简化测试）。
         
-        Args:
-            user_id: 用户 ID
-            plugin_id: 插件 ID
-            
-        Returns:
-            插件测试报告
+        只验证：
+        - 是否能成功建立 MCP 会话
+        - 是否能在合理时间内获取工具列表
+        不再尝试实际调用某个工具，以保证测试快速、稳定。
         """
         # 获取插件
         plugin = await self.plugin_repo.get(id=plugin_id)
@@ -68,82 +69,69 @@ class MCPTestService:
                 success=False,
                 message="插件不存在",
                 tools_count=0,
-                error="Plugin not found"
+                suggestions=[],
+                error="Plugin not found",
             )
-        
+
+        start_time = datetime.now()
+
         try:
-            # Step 1: 测试连接
+            headers = self._get_plugin_headers(plugin)
+
+            # Step 1: 确保插件客户端已创建（不在此处强制连接远端）
             logger.info("测试插件连接: %s", plugin.plugin_name)
             await self.registry.load_plugin(
                 user_id,
                 plugin.plugin_name,
                 plugin.server_url,
-                self._get_plugin_headers(plugin)
+                headers,
             )
-            
-            # Step 2: 获取工具列表
+
+            # Step 2: 尝试获取工具列表（内部已带超时控制）
             tools = await self.registry.list_tools(
                 user_id,
                 plugin.plugin_name,
                 plugin.server_url,
-                self._get_plugin_headers(plugin)
+                headers,
             )
-            if not tools:
-                return PluginTestReport(
-                    success=True,
-                    message="连接成功，但插件未提供任何工具",
-                    tools_count=0
-                )
-            
-            logger.info("插件 %s 提供 %d 个工具", plugin.plugin_name, len(tools))
-            
-            # Step 3-5: 生成测试建议
+
+            duration_ms = (datetime.now() - start_time).total_seconds() * 1000
+            tools_count = len(tools) if tools else 0
+
             suggestions: List[str] = [
-                "✅ 连接成功",
-                f"📊 发现 {len(tools)} 个工具",
+                f"响应时间: {duration_ms:.2f}ms",
             ]
-            
-            # 列出工具名称
-            for i, tool in enumerate(tools[:5], 1):  # 最多显示前5个工具
-                suggestions.append(f"🔧 工具 {i}: {tool.name}")
-            
-            if len(tools) > 5:
-                suggestions.append(f"... 还有 {len(tools) - 5} 个工具")
-            
-            # 选择第一个工具进行测试
-            test_tool = tools[0]
-            suggestions.append(f"🤖 选择工具进行测试: {test_tool.name}")
-            
-            # 简单测试：尝试调用工具（使用空参数）
-            try:
-                # 这里可以使用 AI 生成测试参数，简化版本直接使用空参数
-                test_args = {}
-                result = await self.registry.call_tool(
-                    user_id,
-                    plugin.plugin_name,
-                    plugin.server_url,
-                    test_tool.name,
-                    test_args,
-                    self._get_plugin_headers(plugin)
-                )
-                suggestions.append("✅ 工具调用成功")
-                suggestions.append(f"📝 返回结果: {str(result)[:100]}...")
-            except Exception as exc:
-                suggestions.append(f"⚠️ 工具调用失败: {str(exc)}")
-                suggestions.append("💡 提示: 某些工具可能需要特定参数才能正常工作")
-            
+
+            if tools_count == 0:
+                message = "连接成功，但插件未提供任何工具"
+            else:
+                message = "连接测试成功"
+                suggestions.append(f"发现 {tools_count} 个工具")
+
+                # 最多展示前 5 个工具名称，保持输出简洁
+                for i, tool in enumerate(tools[:5], 1):
+                    name = getattr(tool, "name", None) or str(tool)
+                    suggestions.append(f"工具 {i}: {name}")
+
+                if tools_count > 5:
+                    suggestions.append(f"... 还有 {tools_count - 5} 个工具")
+
+            logger.info("插件 %s 测试完成，工具数: %d", plugin.plugin_name, tools_count)
+
             return PluginTestReport(
                 success=True,
-                message="✅ 插件测试完成",
-                tools_count=len(tools),
-                suggestions=suggestions
+                message=message,
+                tools_count=tools_count,
+                suggestions=suggestions,
+                error=None,
             )
-            
+
         except Exception as exc:
             logger.error("插件测试失败: %s, 错误: %s", plugin.plugin_name, exc)
             return PluginTestReport(
                 success=False,
-                message="❌ 插件测试失败",
+                message="插件测试失败",
                 tools_count=0,
-                error=str(exc)
+                suggestions=[],
+                error=str(exc),
             )

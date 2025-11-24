@@ -1,5 +1,5 @@
 fastapi==0.110.0
-uvicorn[standard]==0.29.0
+uvicorn[standard]==0.31.1
 sqlalchemy==2.0.44
 aiomysql==0.3.2
 aiosqlite==0.21.0
@@ -18,7 +18,7 @@ cryptography>=41.0.0
 libsql-client==0.3.1
 ollama==0.6.0
 langchain-text-splitters==0.3.11
-mcp>=0.1.0
+mcp==1.21.0
 hypothesis>=6.0.0
 pytest>=7.0.0
 pytest-asyncio>=0.21.0

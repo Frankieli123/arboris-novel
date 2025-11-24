@@ -109,43 +109,63 @@ class MCPToolService:
         """
         # 查询用户启用的插件
         enabled_plugins = await self.user_pref_repo.get_enabled_plugins(user_id)
-        
+
         tools: List[Dict[str, Any]] = []
+        plugins_to_fetch: List[Any] = []
+
+        # 先处理缓存命中的插件，避免不必要的并发请求
+        now = datetime.now()
         for plugin in enabled_plugins:
-            # 检查缓存
             cache_key = f"{user_id}:{plugin.plugin_name}"
             cached = self._tool_cache.get(cache_key)
-            
-            if cached and cached.expire_time > datetime.now():
-                # 缓存命中
+
+            if cached and cached.expire_time > now:
                 cached.hit_count += 1
                 tools.extend(cached.tools)
                 logger.debug("工具缓存命中: %s (命中次数: %d)", cache_key, cached.hit_count)
             else:
-                # 缓存未命中，从注册表获取
-                try:
-                    mcp_tools = await self.registry.list_tools(
-                        user_id,
-                        plugin.plugin_name,
-                        plugin.server_url,
-                        self._get_plugin_headers(plugin)
-                    )
-                    converted_tools = self._convert_to_openai_format(mcp_tools, plugin.plugin_name)
-                    
-                    # 更新缓存
-                    expire_time = datetime.now() + timedelta(minutes=MCPConfig.TOOL_CACHE_TTL_MINUTES)
-                    self._tool_cache[cache_key] = ToolCacheEntry(
-                        tools=converted_tools,
-                        expire_time=expire_time,
-                        hit_count=0
-                    )
-                    tools.extend(converted_tools)
-                    logger.info("工具列表已缓存: %s (工具数: %d)", cache_key, len(converted_tools))
-                except Exception as exc:
-                    logger.error("获取插件工具失败: %s, 错误: %s", plugin.plugin_name, exc)
+                plugins_to_fetch.append(plugin)
+
+        # 对未命中缓存的插件并行获取工具列表
+        if plugins_to_fetch:
+            tasks = [
+                self._fetch_and_cache_tools(user_id, plugin)
+                for plugin in plugins_to_fetch
+            ]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for plugin, result in zip(plugins_to_fetch, results):
+                if isinstance(result, Exception):
+                    logger.error("并行获取插件工具失败: %s, 错误: %s", plugin.plugin_name, result)
                     continue
-        
+                tools.extend(result)
+
         return tools
+
+    async def _fetch_and_cache_tools(self, user_id: int, plugin: Any) -> List[Dict[str, Any]]:
+        """为指定插件获取工具列表并写入缓存。"""
+        cache_key = f"{user_id}:{plugin.plugin_name}"
+        try:
+            mcp_tools = await self.registry.list_tools(
+                user_id,
+                plugin.plugin_name,
+                plugin.server_url,
+                self._get_plugin_headers(plugin),
+            )
+            converted_tools = self._convert_to_openai_format(mcp_tools, plugin.plugin_name)
+
+            expire_time = datetime.now() + timedelta(minutes=MCPConfig.TOOL_CACHE_TTL_MINUTES)
+            self._tool_cache[cache_key] = ToolCacheEntry(
+                tools=converted_tools,
+                expire_time=expire_time,
+                hit_count=0,
+            )
+            logger.info("工具列表已缓存: %s (工具数: %d)", cache_key, len(converted_tools))
+            return converted_tools
+        except Exception as exc:
+            logger.error("获取插件工具失败: %s, 错误: %s", plugin.plugin_name, exc)
+            return []
     
     async def execute_tool_calls(
         self, user_id: int, tool_calls: List[Dict]
@@ -303,40 +323,60 @@ class MCPToolService:
         Raises:
             Exception: 达到最大重试次数后仍失败
         """
-        last_exception = None
+        last_exception: Optional[Exception] = None
         
         for attempt in range(MCPConfig.MAX_RETRIES):
             try:
+                # 这里不再额外包 asyncio.wait_for，由 registry.call_tool 统一处理
+                # 超时配置，避免重复的多层超时定义。
                 result = await self.registry.call_tool(
                     user_id,
                     plugin.plugin_name,
                     plugin.server_url,
                     tool_name,
                     arguments,
-                    self._get_plugin_headers(plugin)
+                    self._get_plugin_headers(plugin),
                 )
                 return result
+            except TimeoutError as exc:
+                # 与 MuMu 行为对齐：一旦超时不再重试，直接抛出
+                logger.error(
+                    "工具调用超时，不再重试: %s.%s, 错误: %s",
+                    plugin.plugin_name,
+                    tool_name,
+                    exc,
+                )
+                raise
             except Exception as exc:
                 last_exception = exc
                 if attempt < MCPConfig.MAX_RETRIES - 1:
                     # 计算退避延迟
                     delay = min(
                         MCPConfig.BASE_RETRY_DELAY_SECONDS * (2 ** attempt),
-                        MCPConfig.MAX_RETRY_DELAY_SECONDS
+                        MCPConfig.MAX_RETRY_DELAY_SECONDS,
                     )
                     logger.warning(
                         "工具调用失败，%d 秒后重试 (尝试 %d/%d): %s.%s, 错误: %s",
-                        delay, attempt + 1, MCPConfig.MAX_RETRIES,
-                        plugin.plugin_name, tool_name, exc
+                        delay,
+                        attempt + 1,
+                        MCPConfig.MAX_RETRIES,
+                        plugin.plugin_name,
+                        tool_name,
+                        exc,
                     )
                     await asyncio.sleep(delay)
                 else:
                     logger.error(
                         "工具调用达到最大重试次数: %s.%s, 错误: %s",
-                        plugin.plugin_name, tool_name, exc
+                        plugin.plugin_name,
+                        tool_name,
+                        exc,
                     )
         
-        raise last_exception
+        # 理论上 last_exception 总会被设置，这里只是兜底
+        if last_exception is not None:
+            raise last_exception
+        raise RuntimeError("工具调用重试失败，但未捕获具体异常")
     
     def _convert_to_openai_format(
         self, mcp_tools: List[Any], plugin_name: str

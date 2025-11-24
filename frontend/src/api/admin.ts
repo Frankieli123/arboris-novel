@@ -125,6 +125,7 @@ export interface DailyRequestLimit {
 }
 
 export interface AutoExpandConfig {
+  enabled: boolean
   target_chapter_count: number
 }
 
@@ -280,10 +281,10 @@ export class AdminAPI {
     return this.request('/settings/auto-expand')
   }
 
-  static setAutoExpandConfig(targetChapterCount: number): Promise<AutoExpandConfig> {
+  static setAutoExpandConfig(config: AutoExpandConfig): Promise<AutoExpandConfig> {
     return this.request('/settings/auto-expand', {
       method: 'PUT',
-      body: JSON.stringify({ target_chapter_count: targetChapterCount })
+      body: JSON.stringify(config)
     })
   }
 

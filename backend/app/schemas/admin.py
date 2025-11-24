@@ -50,4 +50,5 @@ class AdminNovelSummary(BaseModel):
 
 
 class AutoExpandConfig(BaseModel):
+    enabled: bool = Field(..., description="是否在生成蓝图后自动拆分章节")
     target_chapter_count: int = Field(..., ge=1, le=10)

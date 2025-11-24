@@ -31,6 +31,7 @@ from ...services.mcp_tool_service import MCPToolService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
 from ...services.admin_setting_service import AdminSettingService
+from ...services.user_setting_service import UserSettingService
 from ...utils.json_utils import remove_think_tags, sanitize_json_like_text, unwrap_markdown_json
 
 logger = logging.getLogger(__name__)
@@ -280,7 +281,7 @@ async def generate_blueprint(
             messages=planning_messages,
             user_id=current_user.id,
             temperature=0.5,
-            timeout=360.0,
+            timeout=600.0,
         )
         mcp_reference_text = mcp_reference_text or ""
     except HTTPException:
@@ -312,7 +313,7 @@ async def generate_blueprint(
         conversation_history=conversation_for_blueprint,
         temperature=0.3,
         user_id=current_user.id,
-        timeout=480.0,
+        timeout=1200.0,
     )
     blueprint_raw = remove_think_tags(blueprint_raw)
 
@@ -344,22 +345,42 @@ async def generate_blueprint(
 
     # 第三阶段：根据章节大纲自动拆分章节规划并创建章节记录
     # 这一阶段属于增强体验逻辑，失败时不会影响蓝图生成结果
+    auto_expand_enabled = False
     try:
-        await _auto_expand_chapter_outlines(
-            project_id=project_id,
-            session=session,
-            current_user=current_user,
-            mcp_registry=mcp_registry,
-        )
+        user_setting_service = UserSettingService(session)
+        # 用户级优先
+        user_enabled = await user_setting_service.get(current_user.id, "auto_expand_enabled")
+        if user_enabled is not None:
+            enabled_source = user_enabled
+        else:
+            admin_setting_service = AdminSettingService(session)
+            enabled_source = await admin_setting_service.get("auto_expand_enabled", "false")
+
+        auto_expand_enabled = str(enabled_source).strip().lower() in {"1", "true", "yes", "y", "on"}
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "项目 %s 自动拆分章节时发生异常，将继续返回蓝图结果: %s",
+            "项目 %s 读取自动章节拆分启用配置失败，将按关闭处理: %s",
             project_id,
             exc,
         )
 
+    if auto_expand_enabled:
+        try:
+            await _auto_expand_chapter_outlines(
+                project_id=project_id,
+                session=session,
+                current_user=current_user,
+                mcp_registry=mcp_registry,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "项目 %s 自动拆分章节时发生异常，将继续返回蓝图结果: %s",
+                project_id,
+                exc,
+            )
+
     ai_message = (
-        "太棒了！我已经根据我们的对话整理出完整的小说蓝图，并为后续写作准备好了章节规划。"
+        "太棒了！我已经根据我们的对话整理出完整的小说蓝图。"
     )
     return BlueprintGenerationResponse(blueprint=blueprint, ai_message=ai_message)
 
@@ -470,12 +491,32 @@ async def _auto_expand_chapter_outlines(
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
 
-    # 默认从后台 Admin 设置中读取自动拆分章节数（auto_expand_target_chapter_count），
-    # 但当调用方显式指定 target_chapter_count 且希望优先使用该值时，可通过
+    # 默认优先读取当前用户的拆分章节数（user_settings.auto_expand_target_chapter_count），
+    # 若用户未配置，则回退到后台 Admin 设置（auto_expand_target_chapter_count）。
+    # 当调用方显式指定 target_chapter_count 且希望优先使用该值时，可通过
     # use_admin_setting=False 跳过这一覆盖逻辑。
     if use_admin_setting:
-        admin_setting_service = AdminSettingService(session)
-        config_value = await admin_setting_service.get("auto_expand_target_chapter_count")
+        try:
+            user_setting_service = UserSettingService(session)
+            user_value = await user_setting_service.get(
+                current_user.id,
+                "auto_expand_target_chapter_count",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "项目 %s 读取用户级自动拆分章节数失败，将回退到后台配置: %s",
+                project_id,
+                exc,
+            )
+            user_value = None
+
+        config_value = None
+        if user_value is not None:
+            config_value = user_value
+        else:
+            admin_setting_service = AdminSettingService(session)
+            config_value = await admin_setting_service.get("auto_expand_target_chapter_count")
+
         if config_value is not None:
             try:
                 parsed = int(str(config_value).strip())

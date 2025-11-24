@@ -277,17 +277,23 @@ async def get_auto_expand_config(
     service: AdminSettingService = Depends(get_admin_setting_service),
     _: None = Depends(get_current_admin),
 ) -> AutoExpandConfig:
-    value = await service.get("auto_expand_target_chapter_count", "3")
-    logger.info("管理员查询自动章节拆分配置：target_chapter_count=%s", value)
+    target_value = await service.get("auto_expand_target_chapter_count", "3")
+    enabled_value = await service.get("auto_expand_enabled", "false")
+    logger.info(
+        "管理员查询自动章节拆分配置：enabled=%s, target_chapter_count=%s",
+        enabled_value,
+        target_value,
+    )
     try:
-        target = int(value or 3)
+        target = int(target_value or 3)
     except (TypeError, ValueError):
         target = 3
     if target < 1:
         target = 1
     if target > 10:
         target = 10
-    return AutoExpandConfig(target_chapter_count=target)
+    enabled = str(enabled_value).strip().lower() in {"1", "true", "yes", "y", "on"}
+    return AutoExpandConfig(enabled=enabled, target_chapter_count=target)
 
 
 @router.put("/settings/auto-expand", response_model=AutoExpandConfig)
@@ -297,7 +303,12 @@ async def update_auto_expand_config(
     _: None = Depends(get_current_admin),
 ) -> AutoExpandConfig:
     await service.set("auto_expand_target_chapter_count", str(payload.target_chapter_count))
-    logger.info("管理员设置自动章节拆分数为 %s", payload.target_chapter_count)
+    await service.set("auto_expand_enabled", "1" if payload.enabled else "0")
+    logger.info(
+        "管理员更新自动章节拆分配置：enabled=%s, target_chapter_count=%s",
+        payload.enabled,
+        payload.target_chapter_count,
+    )
     return payload
 
 

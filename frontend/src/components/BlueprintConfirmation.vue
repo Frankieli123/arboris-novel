@@ -151,7 +151,7 @@ const novelStore = useNovelStore()
 const isGenerating = ref(false)
 const progress = ref(0)
 const timeElapsed = ref(0)
-const maxTime = 180 // 180秒超时
+const maxTime = 600 // 600秒超时
 
 let progressTimer: NodeJS.Timeout | null = null
 let timeoutTimer: NodeJS.Timeout | null = null

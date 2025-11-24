@@ -95,16 +95,17 @@ class MCPPluginRegistry:
         server_url: str,
         headers: Optional[Dict[str, str]] = None
     ) -> None:
-        """加载插件并建立连接。
+        """加载插件并创建客户端实例。
+        
+        参考 MuMu 的实现风格：
+        - 此处仅负责创建并缓存 HTTPMCPClient，不在这里发起网络连接
+        - 实际的连接建立与重连逻辑由 HTTPMCPClient._ensure_connected 负责
         
         Args:
             user_id: 用户 ID
             plugin_name: 插件名称
             server_url: MCP 服务器 URL
             headers: 可选的 HTTP 请求头
-            
-        Raises:
-            Exception: 连接失败时抛出异常
         """
         session_key = self._get_session_key(user_id, plugin_name)
         user_lock = self._get_user_lock(user_id)
@@ -119,9 +120,8 @@ class MCPPluginRegistry:
             if len(self._sessions) >= self._max_clients:
                 await self.evict_lru_session()
             
-            # 创建客户端并连接
+            # 创建客户端（不在此处连接远端 MCP Server）
             client = HTTPMCPClient(server_url, headers)
-            await client.connect()
             
             # 存储会话信息
             now = datetime.now()
@@ -181,26 +181,23 @@ class MCPPluginRegistry:
         """
         session_key = self._get_session_key(user_id, plugin_name)
         user_lock = self._get_user_lock(user_id)
-        
+
+        # 首先在持有 user_lock 的情况下尝试获取已有会话
         async with user_lock:
             session_info = self._sessions.get(session_key)
-            
-            # 检查会话是否存在且有效
+
+            # 如果已存在会话，直接复用客户端。
+            # 连接是否建立交由 HTTPMCPClient._ensure_connected 负责，
+            # 这里不再根据 is_connected 主动删除会话，避免在加载阶段阻塞用户锁。
             if session_info:
-                # 检查连接状态
-                if session_info.client.is_connected():
-                    # 更新最后使用时间
-                    session_info.last_used = datetime.now()
-                    logger.debug("复用插件会话: %s", session_key)
-                    return session_info.client
-                else:
-                    # 连接已断开，移除会话
-                    logger.warning("插件会话连接已断开，将重新创建: %s", session_key)
-                    del self._sessions[session_key]
-            
-            # 会话不存在或已失效，创建新会话
-            await self.load_plugin(user_id, plugin_name, server_url, headers)
-            return self._sessions[session_key].client
+                session_info.last_used = datetime.now()
+                logger.debug("复用插件会话: %s", session_key)
+                return session_info.client
+
+        # 会话不存在时，在锁外创建新客户端，避免同一 user_lock 的重入死锁。
+        # load_plugin 内部会自行获取 user_lock 以保证线程安全。
+        await self.load_plugin(user_id, plugin_name, server_url, headers)
+        return self._sessions[session_key].client
     
     async def list_tools(
         self,
@@ -221,7 +218,23 @@ class MCPPluginRegistry:
             工具定义列表
         """
         client = await self.get_client(user_id, plugin_name, server_url, headers)
-        return await client.list_tools()
+        try:
+            # 为列出工具增加超时控制，避免远端 MCP 服务器无响应导致请求一直挂起
+            return await asyncio.wait_for(
+                client.list_tools(),
+                timeout=MCPConfig.LIST_TOOLS_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "获取工具列表超时: user_id=%s, plugin=%s, url=%s (timeout=%ss)",
+                user_id,
+                plugin_name,
+                server_url,
+                MCPConfig.LIST_TOOLS_TIMEOUT_SECONDS,
+            )
+            raise TimeoutError(
+                f"获取工具列表超时 ({MCPConfig.LIST_TOOLS_TIMEOUT_SECONDS}s)"
+            ) from exc
     
     async def call_tool(
         self,
@@ -246,7 +259,24 @@ class MCPPluginRegistry:
             工具执行结果
         """
         client = await self.get_client(user_id, plugin_name, server_url, headers)
-        return await client.call_tool(tool_name, arguments)
+        try:
+            # 为工具调用增加超时控制，避免远端 MCP 服务器在执行工具时无响应
+            return await asyncio.wait_for(
+                client.call_tool(tool_name, arguments),
+                timeout=MCPConfig.TOOL_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "工具调用超时: user_id=%s, plugin=%s, tool=%s, url=%s (timeout=%ss)",
+                user_id,
+                plugin_name,
+                tool_name,
+                server_url,
+                MCPConfig.TOOL_CALL_TIMEOUT_SECONDS,
+            )
+            raise TimeoutError(
+                f"工具调用超时 ({MCPConfig.TOOL_CALL_TIMEOUT_SECONDS}s)"
+            ) from exc
     
     async def cleanup_expired_sessions(self) -> None:
         """清理过期和空闲的会话。

@@ -37,6 +37,7 @@ from ...services.prompt_service import PromptService
 from ...services.vector_store_service import VectorStoreService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 from ...repositories.system_config_repository import SystemConfigRepository
+from ...services.user_setting_service import UserSettingService
 from .novels import _auto_expand_chapter_outlines
 
 router = APIRouter(prefix="/api/writer", tags=["Writer"])
@@ -391,7 +392,7 @@ async def generate_chapter(
                 detail=f"生成章节第 {idx + 1} 个版本时失败: {str(exc)[:200]}"
             )
 
-    version_count = await _resolve_version_count(session)
+    version_count = await _resolve_version_count(session, current_user.id)
     logger.info(
         "项目 %s 第 %s 章计划生成 %s 个版本",
         project_id,
@@ -426,7 +427,23 @@ async def generate_chapter(
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
-async def _resolve_version_count(session: AsyncSession) -> int:
+async def _resolve_version_count(session: AsyncSession, user_id: int) -> int:
+    # 用户级优先
+    user_setting_service = UserSettingService(session)
+    try:
+        user_value = await user_setting_service.get(user_id, "writer.chapter_versions")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取用户 %s 章节版本数配置失败，将回退到系统配置: %s", user_id, exc)
+        user_value = None
+
+    if user_value is not None:
+        try:
+            value = int(user_value)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            logger.warning("用户 %s 的章节版本数配置无效：%s，将回退到系统配置", user_id, user_value)
+
     repo = SystemConfigRepository(session)
     record = await repo.get_by_key("writer.chapter_versions")
     if record:

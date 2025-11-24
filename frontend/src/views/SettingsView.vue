@@ -17,6 +17,15 @@
             <li
               :class="[
                 'px-4 py-2 rounded-lg cursor-pointer transition-colors',
+                activeTab === 'general' ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-gray-100'
+              ]"
+              @click="activeTab = 'general'"
+            >
+              常规设置
+            </li>
+            <li
+              :class="[
+                'px-4 py-2 rounded-lg cursor-pointer transition-colors mt-2',
                 activeTab === 'llm' ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-gray-100'
               ]"
               @click="activeTab = 'llm'"
@@ -37,8 +46,9 @@
       </div>
 
       <!-- Main Content -->
-      <div class="flex-1">
-        <LLMSettings v-if="activeTab === 'llm'" />
+      <div class="flex-1 space-y-4">
+        <UserGeneralSettings v-if="activeTab === 'general'" />
+        <LLMSettings v-else-if="activeTab === 'llm'" />
         <PluginManagement v-else-if="activeTab === 'plugins'" />
       </div>
     </div>
@@ -49,6 +59,7 @@
 import { ref } from 'vue'
 import LLMSettings from '@/components/LLMSettings.vue'
 import PluginManagement from '@/views/PluginManagement.vue'
+import UserGeneralSettings from '@/components/UserGeneralSettings.vue'
 
-const activeTab = ref<'llm' | 'plugins'>('llm')
+const activeTab = ref<'general' | 'llm' | 'plugins'>('general')
 </script>
