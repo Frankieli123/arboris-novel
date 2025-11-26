@@ -13,6 +13,8 @@ from .novel import (
     NovelBlueprint,
     NovelConversation,
     NovelProject,
+    Organization,
+    OrganizationMember,
 )
 from .prompt import Prompt
 from .update_log import UpdateLog
@@ -35,6 +37,8 @@ __all__ = [
     "Chapter",
     "ChapterVersion",
     "ChapterEvaluation",
+    "Organization",
+    "OrganizationMember",
     "NovelProject",
     "Prompt",
     "UpdateLog",

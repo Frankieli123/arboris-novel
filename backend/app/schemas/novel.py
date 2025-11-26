@@ -58,6 +58,7 @@ class ChapterOutline(BaseModel):
     title: str
     summary: str
     children: Optional[List[OutlineChildChapter]] = None
+    extra: Optional[Dict[str, Any]] = None
 
 
 class Chapter(ChapterOutline):
@@ -74,7 +75,36 @@ class Chapter(ChapterOutline):
 class Relationship(BaseModel):
     character_from: str
     character_to: str
+    relationship_type: Optional[str] = None
+    intimacy_level: int = 0
     description: str
+
+
+class OrganizationMemberInfo(BaseModel):
+    id: int
+    character_id: int
+    character_name: str
+    position: str
+    rank: int
+    loyalty: int
+    status: str
+    joined_at: Optional[str] = None
+    left_at: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class OrganizationDetail(BaseModel):
+    id: int
+    name: str
+    power_level: int
+    member_count: int
+    location: Optional[str] = None
+    motto: Optional[str] = None
+    color: Optional[str] = None
+    level: int = 0
+    parent_org_id: Optional[int] = None
+    character_id: Optional[int] = None
+    members: List[OrganizationMemberInfo] = []
 
 
 class Blueprint(BaseModel):

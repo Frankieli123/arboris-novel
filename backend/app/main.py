@@ -59,6 +59,16 @@ dictConfig(
                 "handlers": ["console"],
                 "propagate": False,
             },
+            "sqlalchemy.engine": {
+                "level": "WARNING",
+                "handlers": ["console"],
+                "propagate": False,
+            },
+            "sqlalchemy.engine.Engine": {
+                "level": "WARNING",
+                "handlers": ["console"],
+                "propagate": False,
+            },
         },
         "root": {
             "level": "WARNING",

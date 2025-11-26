@@ -64,7 +64,8 @@ class HTTPMCPClient:
             if self._session is not None and self._initialized:
                 return
             try:
-                logger.info("正在连接到 MCP 服务器: %s", self.server_url)
+                safe_url = self.server_url.split("?", 1)[0]
+                logger.info("正在连接到 MCP 服务器: %s", safe_url)
                 
                 # 使用官方 SDK 的 streamable_http_client 创建 HTTP 流
                 stream_context = streamablehttp_client(
@@ -86,7 +87,7 @@ class HTTPMCPClient:
                 await self._session.initialize()
                 self._initialized = True
                 
-                logger.info("成功连接到 MCP 服务器: %s", self.server_url)
+                logger.info("成功连接到 MCP 服务器: %s", safe_url)
             except Exception as exc:
                 logger.error("连接 MCP 服务器失败: %s, 错误: %s", self.server_url, exc)
                 await self._cleanup()
@@ -134,10 +135,11 @@ class HTTPMCPClient:
         await self._ensure_connected()
         
         try:
-            logger.debug("正在获取工具列表: %s", self.server_url)
+            safe_url = self.server_url.split("?", 1)[0]
+            logger.debug("正在获取工具列表: %s", safe_url)
             result = await self._session.list_tools()
             tools = result.tools if hasattr(result, "tools") else []
-            logger.info("获取到 %d 个工具: %s", len(tools), self.server_url)
+            logger.info("获取到 %d 个工具: %s", len(tools), safe_url)
             return tools
         except Exception as exc:
             logger.error("获取工具列表失败: %s, 错误: %s", self.server_url, exc)

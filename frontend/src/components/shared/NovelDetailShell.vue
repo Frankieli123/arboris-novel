@@ -823,7 +823,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import { NovelAPI } from '@/api/novel'
 import { AdminAPI } from '@/api/admin'
-import type { NovelProject, NovelSectionResponse, NovelSectionType, ChapterOutline, OutlineExpansionResponse, OutlineChaptersResponse, ChapterPlanItem } from '@/api/novel'
+import type { NovelProject, NovelSectionResponse, NovelSectionType, ChapterOutline, OutlineExpansionResponse, OutlineChaptersResponse, ChapterPlanItem, OrganizationDetail } from '@/api/novel'
 import BlueprintEditModal from '@/components/BlueprintEditModal.vue'
 import OverviewSection from '@/components/novel-detail/OverviewSection.vue'
 import WorldSettingSection from '@/components/novel-detail/WorldSettingSection.vue'
@@ -831,13 +831,14 @@ import CharactersSection from '@/components/novel-detail/CharactersSection.vue'
 import RelationshipsSection from '@/components/novel-detail/RelationshipsSection.vue'
 import ChapterOutlineSection from '@/components/novel-detail/ChapterOutlineSection.vue'
 import ChaptersSection from '@/components/novel-detail/ChaptersSection.vue'
+import FactionsManagementSection from '@/components/novel-detail/FactionsManagementSection.vue'
 import WDEditChapterModal from '@/components/writing-desk/WDEditChapterModal.vue'
 
 interface Props {
   isAdmin?: boolean
 }
 
-type SectionKey = NovelSectionType
+type SectionKey = NovelSectionType | 'organizations'
 
 type PlanFieldKey = 'plot_summary' | 'narrative_goal' | 'key_events' | 'scenes' | 'character_focus'
 
@@ -855,6 +856,7 @@ const isSidebarOpen = ref(typeof window !== 'undefined' ? window.innerWidth >= 1
 const sections: Array<{ key: SectionKey; label: string; description: string }> = [
   { key: 'overview', label: '项目概览', description: '定位与整体梗概' },
   { key: 'world_setting', label: '世界设定', description: '规则、地点与阵营' },
+  { key: 'organizations', label: '阵营管理', description: '主要势力与关键成员' },
   { key: 'characters', label: '主要角色', description: '人物性格与目标' },
   { key: 'relationships', label: '人物关系', description: '角色之间的联系' },
   { key: 'chapter_outline', label: '大纲管理', description: props.isAdmin ? '故事章节规划' : '故事结构规划' },
@@ -864,6 +866,7 @@ const sections: Array<{ key: SectionKey; label: string; description: string }> =
 const sectionComponents: Record<SectionKey, any> = {
   overview: OverviewSection,
   world_setting: WorldSettingSection,
+  organizations: FactionsManagementSection,
   characters: CharactersSection,
   relationships: RelationshipsSection,
   chapter_outline: ChapterOutlineSection,
@@ -881,6 +884,9 @@ const getSectionIcon = (key: SectionKey) => {
     world_setting: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2 }, [
       h('circle', { cx: 12, cy: 12, r: 10 }),
       h('path', { d: 'M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z' })
+    ]),
+    organizations: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2 }, [
+      h('path', { d: 'M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' })
     ]),
     characters: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2 }, [
       h('path', { d: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2' }),
@@ -912,6 +918,7 @@ const sectionData = reactive<Partial<Record<SectionKey, any>>>({})
 const sectionLoading = reactive<Record<SectionKey, boolean>>({
   overview: false,
   world_setting: false,
+  organizations: false,
   characters: false,
   relationships: false,
   chapter_outline: false,
@@ -920,6 +927,7 @@ const sectionLoading = reactive<Record<SectionKey, boolean>>({
 const sectionError = reactive<Record<SectionKey, string | null>>({
   overview: null,
   world_setting: null,
+  organizations: null,
   characters: null,
   relationships: null,
   chapter_outline: null,
@@ -1109,13 +1117,23 @@ const loadSection = async (section: SectionKey, force = false) => {
   sectionLoading[section] = true
   sectionError[section] = null
   try {
-    const response: NovelSectionResponse = props.isAdmin
-      ? await AdminAPI.getNovelSection(projectId, section)
-      : await NovelAPI.getSection(projectId, section)
-    sectionData[section] = response.data
-    if (section === 'overview') {
-      overviewMeta.title = response.data?.title || overviewMeta.title
-      overviewMeta.updated_at = response.data?.updated_at || null
+    if (section === 'organizations') {
+      // 阵营管理使用单独的组织接口
+      if (props.isAdmin) {
+        sectionData[section] = { organizations: [] as OrganizationDetail[] }
+      } else {
+        const organizations = await NovelAPI.getOrganizations(projectId)
+        sectionData[section] = { organizations }
+      }
+    } else {
+      const response: NovelSectionResponse = props.isAdmin
+        ? await AdminAPI.getNovelSection(projectId, section as NovelSectionType)
+        : await NovelAPI.getSection(projectId, section as NovelSectionType)
+      sectionData[section] = response.data
+      if (section === 'overview') {
+        overviewMeta.title = response.data?.title || overviewMeta.title
+        overviewMeta.updated_at = response.data?.updated_at || null
+      }
     }
   } catch (error) {
     console.error('加载模块失败:', error)
@@ -1163,6 +1181,8 @@ const componentProps = computed(() => {
     case 'characters':
       return { data: data || null, editable }
     case 'relationships':
+      return { data: data || null, editable }
+    case 'organizations':
       return { data: data || null, editable }
     case 'chapter_outline':
       return { outline: data?.chapter_outline || [], editable, checkingOutlineId: checkingOutlineId.value }

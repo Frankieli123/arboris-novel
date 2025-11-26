@@ -603,7 +603,7 @@ async def generate_chapter_outline(
     llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
 
     # 校验项目归属
-    await novel_service.ensure_project_owner(project_id, current_user.id)
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
 
     # 读取当前项目蓝图与已有章节大纲，用于智能判断生成模式
     project_schema = await novel_service.get_project_schema(project_id, current_user.id)
@@ -615,6 +615,44 @@ async def generate_chapter_outline(
         if existing_outlines
         else 0
     )
+
+    # 尝试从概念对话历史中提取可供大纲生成参考的文本
+    concept_history_text = ""
+    try:
+        history_records = await novel_service.list_conversations(project_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "项目 %s 读取概念对话历史失败，章节大纲将仅基于蓝图与 MCP 参考生成: %s",
+            project_id,
+            exc,
+        )
+        history_records = []
+
+    if history_records:
+        formatted_history: List[Dict[str, str]] = []
+        for record in history_records:
+            role = record.role
+            content = record.content
+            if not role or not content:
+                continue
+            try:
+                normalized = unwrap_markdown_json(content)
+                data = json.loads(normalized)
+                if role == "user":
+                    user_value = data.get("value", data)
+                    if isinstance(user_value, str):
+                        formatted_history.append({"role": "user", "content": user_value})
+                elif role == "assistant":
+                    ai_message = data.get("ai_message") if isinstance(data, dict) else None
+                    if ai_message:
+                        formatted_history.append({"role": "assistant", "content": ai_message})
+            except (json.JSONDecodeError, AttributeError):
+                continue
+
+        if formatted_history:
+            concept_history_text = "\n".join(
+                f"[{item['role']}]: {item['content']}" for item in formatted_history
+            )
 
     # 计算实际执行模式：auto 根据是否已有大纲自动转为 new / continue
     requested_mode = getattr(request, "mode", "auto") or "auto"
@@ -661,6 +699,18 @@ async def generate_chapter_outline(
             await prompt_service.get_prompt("outline_mcp_planning"),
             "outline_mcp_planning",
         )
+        # 规划阶段 user 内容：世界蓝图 +（可选）概念对话节选 + 任务说明
+        planning_user_content = (
+            f"现在需要为小说项目生成章节大纲，起始章节为 {request.start_chapter}，连续 {request.num_chapters} 章。\n\n"
+            f"[世界蓝图]\n{json.dumps(blueprint_dict, ensure_ascii=False, indent=2)}\n\n"
+        )
+        if concept_history_text:
+            planning_user_content += f"[概念对话节选]\n{concept_history_text}\n\n"
+        planning_user_content += (
+            "请在需要时调用可用的工具，检索与题材、时代背景、场景、情节结构相关的 1-3 条关键资料，"
+            "并整理成供大纲设计使用的参考说明，不要直接给出最终章节大纲 JSON。"
+        )
+
         planning_messages = [
             {
                 "role": "system",
@@ -668,12 +718,7 @@ async def generate_chapter_outline(
             },
             {
                 "role": "user",
-                "content": (
-                    f"现在需要为小说项目生成章节大纲，起始章节为 {request.start_chapter}，连续 {request.num_chapters} 章。\n\n"
-                    f"[世界蓝图]\n{json.dumps(blueprint_dict, ensure_ascii=False, indent=2)}\n\n"
-                    "请在需要时调用可用的工具，检索与题材、时代背景、场景、情节结构相关的 1-3 条关键资料，"
-                    "并整理成供大纲设计使用的参考说明，不要直接给出最终章节大纲 JSON。"
-                ),
+                "content": planning_user_content,
             },
         ]
         planning_text = await llm_service.generate_text_with_mcp(
@@ -721,6 +766,8 @@ async def generate_chapter_outline(
     }
     if mcp_reference_materials:
         payload["mcp_references"] = mcp_reference_materials
+    if concept_history_text:
+        payload["concept_conversation"] = concept_history_text
 
     # 使用 MCP 工具支持的生成方法
     messages = [
@@ -748,6 +795,16 @@ async def generate_chapter_outline(
             detail=f"章节大纲生成失败，AI 返回的内容格式不正确: {str(exc)}"
         ) from exc
 
+    # 允许大纲阶段顺带更新蓝图的一句话概括与长纲
+    if isinstance(data, dict):
+        blueprint_patch: Dict[str, Any] = {}
+        if "one_sentence_summary" in data:
+            blueprint_patch["one_sentence_summary"] = data["one_sentence_summary"]
+        if "full_synopsis" in data:
+            blueprint_patch["full_synopsis"] = data["full_synopsis"]
+        if blueprint_patch:
+            await novel_service.patch_blueprint(project_id, blueprint_patch)
+
     new_outlines = data.get("chapters", [])
 
     # new 模式：按 MuMu 行为清空旧大纲后整体写入新的章节大纲；同时清空所有已有章节
@@ -758,6 +815,8 @@ async def generate_chapter_outline(
         await session.execute(
             delete(Chapter).where(Chapter.project_id == project_id)
         )
+
+    core_keys = {"chapter_number", "title", "summary"}
     for item in new_outlines:
         stmt = (
             select(ChapterOutline)
@@ -768,9 +827,16 @@ async def generate_chapter_outline(
         )
         result = await session.execute(stmt)
         record = result.scalars().first()
+
+        extra = {k: v for k, v in item.items() if k not in core_keys}
+
         if record:
             record.title = item.get("title", record.title)
             record.summary = item.get("summary", record.summary)
+            if extra:
+                current_extra = getattr(record, "extra", None) or {}
+                current_extra.update(extra)
+                record.extra = current_extra
         else:
             session.add(
                 ChapterOutline(
@@ -778,6 +844,7 @@ async def generate_chapter_outline(
                     chapter_number=item.get("chapter_number"),
                     title=item.get("title", ""),
                     summary=item.get("summary"),
+                    extra=extra or None,
                 )
             )
     await session.commit()
@@ -807,6 +874,11 @@ async def generate_chapter_outline(
                 project_id,
                 exc,
             )
+
+    # 大纲生成完成后，将项目状态标记为 blueprint_ready
+    project.status = "blueprint_ready"
+    await session.commit()
+    logger.info("项目 %s 标记为 blueprint_ready（章节大纲已生成）", project_id)
 
     return await novel_service.get_project_schema(project_id, current_user.id)
 

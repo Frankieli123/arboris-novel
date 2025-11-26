@@ -83,6 +83,8 @@ from ..models import (
     NovelBlueprint,
     NovelConversation,
     NovelProject,
+    Organization,
+    OrganizationMember,
 )
 from ..repositories.novel_repository import NovelRepository
 from ..schemas.admin import AdminNovelSummary
@@ -284,6 +286,8 @@ class NovelService:
                     project_id=project_id,
                     character_from=relation.character_from,
                     character_to=relation.character_to,
+                    relationship_type=relation.relationship_type,
+                    intimacy_level=relation.intimacy_level,
                     description=relation.description,
                     position=index,
                 )
@@ -299,6 +303,33 @@ class NovelService:
                     summary=outline.summary,
                 )
             )
+
+        await self.session.commit()
+        await self._touch_project(project_id)
+
+    async def update_world_from_blueprint(self, project_id: str, world_blueprint: Blueprint) -> None:
+        """仅根据给定的蓝图对象更新世界观相关字段，不改动角色、关系和章节大纲。
+
+        用于多步蓝图生成的第一步（世界观阶段）。
+        """
+        record = await self.session.get(NovelBlueprint, project_id)
+        if not record:
+            record = NovelBlueprint(project_id=project_id)
+            self.session.add(record)
+
+        record.title = world_blueprint.title
+        record.target_audience = world_blueprint.target_audience
+        record.genre = world_blueprint.genre
+        record.style = world_blueprint.style
+        record.tone = world_blueprint.tone
+        record.one_sentence_summary = world_blueprint.one_sentence_summary
+        record.full_synopsis = world_blueprint.full_synopsis
+        record.world_setting = world_blueprint.world_setting
+
+        # 同步项目标题，但不在此处修改状态，状态由路由层控制
+        project = await self.session.get(NovelProject, project_id)
+        if project and world_blueprint.title:
+            project.title = world_blueprint.title
 
         await self.session.commit()
         await self._touch_project(project_id)
@@ -348,6 +379,8 @@ class NovelService:
                         project_id=project_id,
                         character_from=relation.get("character_from"),
                         character_to=relation.get("character_to"),
+                        relationship_type=relation.get("relationship_type"),
+                        intimacy_level=relation.get("intimacy_level", 0),
                         description=relation.get("description"),
                         position=index,
                     )
@@ -459,6 +492,79 @@ class NovelService:
         )
         await self.session.commit()
         await self._touch_project(project_id)
+
+    async def list_organizations_with_members(self, project_id: str) -> List[Dict[str, Any]]:
+        stmt = (
+            select(Organization)
+            .where(Organization.project_id == project_id)
+            .order_by(Organization.level.asc(), Organization.id.asc())
+        )
+        result = await self.session.execute(stmt)
+        organizations = list(result.scalars())
+        if not organizations:
+            return []
+        org_ids = [org.id for org in organizations]
+        member_result = await self.session.execute(
+            select(OrganizationMember).where(OrganizationMember.organization_id.in_(org_ids))
+        )
+        members = list(member_result.scalars())
+        character_ids: set[int] = set()
+        for org in organizations:
+            if org.character_id is not None:
+                character_ids.add(org.character_id)
+        for member in members:
+            character_ids.add(member.character_id)
+        characters: Dict[int, BlueprintCharacter] = {}
+        if character_ids:
+            char_result = await self.session.execute(
+                select(BlueprintCharacter).where(
+                    BlueprintCharacter.project_id == project_id,
+                    BlueprintCharacter.id.in_(list(character_ids)),
+                )
+            )
+            for char in char_result.scalars():
+                characters[char.id] = char
+        organizations_data: List[Dict[str, Any]] = []
+        for org in organizations:
+            org_members = [m for m in members if m.organization_id == org.id]
+            character_name = "未命名阵营"
+            if org.character_id is not None and org.character_id in characters:
+                character_name = characters[org.character_id].name or character_name
+            members_data: List[Dict[str, Any]] = []
+            for member in org_members:
+                member_name = "未知角色"
+                if member.character_id in characters:
+                    member_name = characters[member.character_id].name or member_name
+                members_data.append(
+                    {
+                        "id": member.id,
+                        "character_id": member.character_id,
+                        "character_name": member_name,
+                        "position": member.position,
+                        "rank": member.rank,
+                        "loyalty": member.loyalty,
+                        "status": member.status,
+                        "joined_at": member.joined_at,
+                        "left_at": member.left_at,
+                        "notes": member.notes,
+                    }
+                )
+            organizations_data.append(
+                {
+                    "id": org.id,
+                    "name": character_name,
+                    "power_level": org.power_level,
+                    "member_count": org.member_count,
+                    "location": org.location,
+                    "motto": org.motto,
+                    "color": org.color,
+                    "level": org.level,
+                    "parent_org_id": org.parent_org_id,
+                    "character_id": org.character_id,
+                    "members": members_data,
+                }
+            )
+        return organizations_data
 
     # ------------------------------------------------------------------
     # 序列化辅助
@@ -574,6 +680,7 @@ class NovelService:
                         "character_to": relation.character_to,
                         "description": relation.description or "",
                         "relationship_type": getattr(relation, "relationship_type", None),
+                        "intimacy_level": getattr(relation, "intimacy_level", 0),
                     }
                     for relation in sorted(project.relationships_, key=lambda r: r.position)
                 ],
@@ -584,6 +691,7 @@ class NovelService:
                         title=outline.title,
                         summary=outline.summary or "",
                         children=children_map.get(outline.id),
+                        extra=getattr(outline, "extra", None),
                     )
                     for outline in sorted(project.outlines, key=lambda o: o.chapter_number)
                 ],

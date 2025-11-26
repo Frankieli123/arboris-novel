@@ -10,9 +10,19 @@ MCP (Model Context Protocol) 插件系统模块。
 from .config import MCPConfig
 from .http_client import HTTPMCPClient
 from .registry import MCPPluginRegistry
+from .adapters.base import BaseMCPAdapter, AdapterType, ToolCallResult
+from .adapters.prompt_injection import PromptInjectionAdapter
+from .adapters.function_calling import FunctionCallingAdapter
+from .adapters.universal import UniversalMCPAdapter
 
 __all__ = [
     "MCPConfig",
     "HTTPMCPClient",
     "MCPPluginRegistry",
+    "BaseMCPAdapter",
+    "AdapterType",
+    "ToolCallResult",
+    "PromptInjectionAdapter",
+    "FunctionCallingAdapter",
+    "UniversalMCPAdapter",
 ]

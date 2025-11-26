@@ -168,13 +168,14 @@ class MCPToolService:
             return []
     
     async def execute_tool_calls(
-        self, user_id: int, tool_calls: List[Dict]
+        self, user_id: int, tool_calls: List[Dict], max_concurrent: int = 2
     ) -> List[Dict]:
-        """并行执行多个工具调用。
+        """批量执行多个工具调用（限制并发数，避免超时）。
         
         Args:
             user_id: 用户 ID
             tool_calls: 工具调用列表
+            max_concurrent: 最大并发工具调用数（默认 2）
             
         Returns:
             工具调用结果列表
@@ -182,33 +183,55 @@ class MCPToolService:
         if not tool_calls:
             return []
         
-        logger.info("开始执行 %d 个工具调用，用户: %d", len(tool_calls), user_id)
+        logger.info(
+            "开始执行 %d 个工具调用，用户: %d, 最大并发: %d",
+            len(tool_calls),
+            user_id,
+            max_concurrent,
+        )
         
-        # 创建并行任务
-        tasks = [
-            self._execute_single_tool(user_id, tool_call)
-            for tool_call in tool_calls
-        ]
+        all_results: List[Dict] = []
+        total = len(tool_calls)
+        if max_concurrent <= 0:
+            max_concurrent = 1
         
-        # 并行执行
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i in range(0, total, max_concurrent):
+            batch = tool_calls[i : i + max_concurrent]
+            batch_num = i // max_concurrent + 1
+            total_batches = (total + max_concurrent - 1) // max_concurrent
+            
+            logger.info(
+                "执行工具批次 %d/%d，数量: %d",
+                batch_num,
+                total_batches,
+                len(batch),
+            )
+            
+            tasks = [
+                self._execute_single_tool(user_id, tool_call)
+                for tool_call in batch
+            ]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for j, result in enumerate(batch_results):
+                tool_call = batch[j]
+                if isinstance(result, Exception):
+                    logger.error("工具调用失败: %s", result)
+                    all_results.append({
+                        "tool_call_id": tool_call.get("id", f"call_{i + j}"),
+                        "role": "tool",
+                        "name": tool_call.get("function", {}).get("name", "unknown"),
+                        "content": json.dumps({"error": str(result)}, ensure_ascii=False),
+                        "success": False,
+                    })
+                else:
+                    all_results.append(result)
+            
+            if i + max_concurrent < total:
+                await asyncio.sleep(0.5)
+                logger.debug("工具批次间延迟 0.5 秒以避免限流")
         
-        # 处理结果
-        formatted_results: List[Dict] = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error("工具调用失败: %s", result)
-                formatted_results.append({
-                    "tool_call_id": tool_calls[i].get("id", "unknown"),
-                    "role": "tool",
-                    "name": tool_calls[i].get("function", {}).get("name", "unknown"),
-                    "content": json.dumps({"error": str(result)}, ensure_ascii=False),
-                    "success": False
-                })
-            else:
-                formatted_results.append(result)
-        
-        return formatted_results
+        return all_results
     
     async def _execute_single_tool(
         self, user_id: int, tool_call: Dict
@@ -228,7 +251,9 @@ class MCPToolService:
         arguments_str = function_data.get("arguments", "{}")
         
         # 解析插件名和工具名 (格式: plugin_name.tool_name)
-        if "." in full_tool_name:
+        if "_" in full_tool_name:
+            plugin_name, tool_name = full_tool_name.split("_", 1)
+        elif "." in full_tool_name:
             plugin_name, tool_name = full_tool_name.split(".", 1)
         else:
             plugin_name = full_tool_name
@@ -391,23 +416,46 @@ class MCPToolService:
             OpenAI Function Calling 格式的工具列表
         """
         converted: List[Dict[str, Any]] = []
-        
+
         for tool in mcp_tools:
+            raw_schema = getattr(tool, "inputSchema", None)
+            if isinstance(raw_schema, dict):
+                parameters = self._sanitize_json_schema(raw_schema)
+            else:
+                parameters = {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+
             # MCP Tool 对象转换为 OpenAI 格式
             converted.append({
                 "type": "function",
                 "function": {
-                    "name": f"{plugin_name}.{tool.name}",
+                    "name": f"{plugin_name}_{tool.name}",
                     "description": tool.description or "",
-                    "parameters": tool.inputSchema or {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
+                    "parameters": parameters,
                 }
             })
-        
+
         return converted
+
+    def _sanitize_json_schema(self, schema: Any) -> Any:
+        """清洗 MCP JSON Schema，移除不被部分 LLM 提供方支持的字段。
+
+        当前主要针对 Gemini 等后端，它们在 tools.parameters 中不接受
+        "$schema" 和 "additionalProperties" 等字段。
+        """
+        if isinstance(schema, dict):
+            cleaned: Dict[str, Any] = {}
+            for key, value in schema.items():
+                if key in {"$schema", "additionalProperties"}:
+                    continue
+                cleaned[key] = self._sanitize_json_schema(value)
+            return cleaned
+        if isinstance(schema, list):
+            return [self._sanitize_json_schema(item) for item in schema]
+        return schema
     
     def get_metrics(self, tool_name: Optional[str] = None) -> Dict:
         """获取工具调用指标。

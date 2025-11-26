@@ -58,6 +58,12 @@ class NovelProject(Base):
     chapters: Mapped[list["Chapter"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Chapter.chapter_number"
     )
+    organizations: Mapped[list["Organization"]] = relationship(
+        "Organization",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        order_by="Organization.id",
+    )
 
 
 class NovelConversation(Base):
@@ -127,6 +133,8 @@ class BlueprintRelationship(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False)
     character_from: Mapped[str] = mapped_column(String(255), nullable=False)
     character_to: Mapped[str] = mapped_column(String(255), nullable=False)
+    relationship_type: Mapped[Optional[str]] = mapped_column(String(100))
+    intimacy_level: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[Optional[str]] = mapped_column(Text)
     position: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -143,6 +151,7 @@ class ChapterOutline(Base):
     chapter_number: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     summary: Mapped[Optional[str]] = mapped_column(Text)
+    extra: Mapped[Optional[dict]] = mapped_column(JSON)
 
     project: Mapped[NovelProject] = relationship(back_populates="outlines")
     chapters: Mapped[list["Chapter"]] = relationship(
@@ -239,3 +248,79 @@ class ChapterEvaluation(Base):
 
     chapter: Mapped[Chapter] = relationship(back_populates="evaluations")
     version: Mapped[Optional[ChapterVersion]] = relationship(back_populates="evaluations")
+
+
+class Organization(Base):
+    """势力 / 组织详情表。"""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # 可选：关联到蓝图角色，用于把某个角色视为该势力的代表/组织记录
+    character_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("blueprint_characters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    parent_org_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
+    level: Mapped[int] = mapped_column(Integer, default=0)
+
+    power_level: Mapped[int] = mapped_column(Integer, default=50)
+    member_count: Mapped[int] = mapped_column(Integer, default=0)
+    location: Mapped[Optional[str]] = mapped_column(Text)
+    motto: Mapped[Optional[str]] = mapped_column(String(200))
+    color: Mapped[Optional[str]] = mapped_column(String(100))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    project: Mapped["NovelProject"] = relationship("NovelProject", back_populates="organizations")
+    character: Mapped[Optional["BlueprintCharacter"]] = relationship("BlueprintCharacter")
+    members: Mapped[list["OrganizationMember"]] = relationship(
+        "OrganizationMember",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+
+class OrganizationMember(Base):
+    """势力成员关系表。"""
+
+    __tablename__ = "organization_members"
+
+    id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    character_id: Mapped[int] = mapped_column(
+        ForeignKey("blueprint_characters.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    position: Mapped[str] = mapped_column(String(100), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    joined_at: Mapped[Optional[str]] = mapped_column(String(100))
+    left_at: Mapped[Optional[str]] = mapped_column(String(100))
+
+    loyalty: Mapped[int] = mapped_column(Integer, default=50)
+    contribution: Mapped[int] = mapped_column(Integer, default=0)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(20), default="ai")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization: Mapped["Organization"] = relationship("Organization", back_populates="members")
+    character: Mapped["BlueprintCharacter"] = relationship("BlueprintCharacter")

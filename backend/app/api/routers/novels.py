@@ -23,6 +23,7 @@ from ...schemas.novel import (
     NovelProjectSummary,
     NovelSectionResponse,
     NovelSectionType,
+    OrganizationDetail,
 )
 from ...schemas.user import UserInDB
 from ...mcp.registry import MCPPluginRegistry
@@ -109,6 +110,18 @@ async def get_novel_section(
     novel_service = NovelService(session)
     logger.info("用户 %s 获取项目 %s 的 %s 区段", current_user.id, project_id, section)
     return await novel_service.get_section_data(project_id, current_user.id, section)
+
+
+@router.get("/{project_id}/organizations", response_model=List[OrganizationDetail])
+async def list_organizations(
+	project_id: str,
+	session: AsyncSession = Depends(get_session),
+	current_user: UserInDB = Depends(get_current_user),
+) -> List[OrganizationDetail]:
+	novel_service = NovelService(session)
+	await novel_service.ensure_project_owner(project_id, current_user.id)
+	data = await novel_service.list_organizations_with_members(project_id)
+	return [OrganizationDetail.model_validate(item) for item in data]
 
 
 @router.get("/{project_id}/chapters/{chapter_number}", response_model=ChapterSchema)
@@ -206,6 +219,370 @@ async def converse_with_concept(
     return ConverseResponse(**parsed)
 
 
+@router.post("/{project_id}/blueprint/world", response_model=BlueprintGenerationResponse)
+async def generate_blueprint_world(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    mcp_registry: MCPPluginRegistry = Depends(get_mcp_registry),
+) -> BlueprintGenerationResponse:
+    """多步蓝图生成：第一步，仅生成世界观与整体梗概。"""
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+
+    # 初始化 MCP 工具服务和支持 MCP 的 LLM 服务
+    mcp_tool_service = MCPToolService(session, mcp_registry)
+    llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
+
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    logger.info("[世界观蓝图][步骤1/4] 开始生成世界观蓝图, project_id=%s", project_id)
+
+    history_records = await novel_service.list_conversations(project_id)
+    if not history_records:
+        logger.warning("项目 %s 缺少对话历史，无法生成世界观蓝图", project_id)
+        raise HTTPException(status_code=400, detail="缺少对话历史，请先完成概念对话后再生成世界观蓝图")
+
+    formatted_history: List[Dict[str, str]] = []
+    for record in history_records:
+        role = record.role
+        content = record.content
+        if not role or not content:
+            continue
+        try:
+            normalized = unwrap_markdown_json(content)
+            data = json.loads(normalized)
+            if role == "user":
+                user_value = data.get("value", data)
+                if isinstance(user_value, str):
+                    formatted_history.append({"role": "user", "content": user_value})
+            elif role == "assistant":
+                ai_message = data.get("ai_message") if isinstance(data, dict) else None
+                if ai_message:
+                    formatted_history.append({"role": "assistant", "content": ai_message})
+        except (json.JSONDecodeError, AttributeError):
+            continue
+
+    if not formatted_history:
+        logger.warning("项目 %s 对话历史格式异常，无法提取有效内容用于世界观生成", project_id)
+        raise HTTPException(
+            status_code=400,
+            detail="无法从历史对话中提取有效内容，请检查对话历史格式或重新进行概念对话",
+        )
+
+    # 使用 MCP 工具进行资料/规划阶段
+    logger.info("[世界观蓝图][步骤2/4] 进入 MCP 规划阶段, 准备检索世界观相关资料, project_id=%s", project_id)
+    mcp_reference_text = ""
+    try:
+        planning_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一名资深小说策划与世界观设计顾问，可以调用外部 MCP 插件检索资料，"
+                    "为后续的世界观与蓝图设计提供真实、系统的参考信息。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "下面是我们之前关于这部小说的概念对话内容，请先通读这些信息，"
+                    "在需要时调用可用的工具，检索与题材、时代背景、世界观设定等相关的 1-3 条高价值资料，"
+                    "并整理成供世界观设计使用的参考说明，不要直接输出最终 JSON 蓝图。\n\n"
+                    + "\n".join(f"[{item['role']}]: {item['content']}" for item in formatted_history)
+                ),
+            },
+        ]
+        mcp_reference_text = await llm_service.generate_text_with_mcp(
+            messages=planning_messages,
+            user_id=current_user.id,
+            temperature=0.5,
+            timeout=600.0,
+        )
+        mcp_reference_text = mcp_reference_text or ""
+        if mcp_reference_text:
+            logger.info(
+                "[世界观蓝图] MCP 规划阶段完成, 参考资料长度=%s, project_id=%s",
+                len(mcp_reference_text),
+                project_id,
+            )
+        else:
+            logger.info("[世界观蓝图] MCP 规划阶段完成但未返回参考资料, project_id=%s", project_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "项目 %s 世界观 MCP 规划阶段失败，将在无 MCP 参考资料的情况下生成世界观: %s",
+            project_id,
+            exc,
+        )
+        mcp_reference_text = ""
+
+    # 使用 worldbuilding 提示词，在对话历史基础上（可选地）附加 MCP 参考资料，生成世界观蓝图
+    logger.info("[世界观蓝图][步骤3/4] 调用 LLM 生成世界观 JSON 蓝图, project_id=%s", project_id)
+    system_prompt = _ensure_prompt(await prompt_service.get_prompt("worldbuilding"), "worldbuilding")
+
+    conversation_for_world = list(formatted_history)
+    if mcp_reference_text:
+        conversation_for_world.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "[MCP 参考资料]\n" + mcp_reference_text
+                ),
+            }
+        )
+
+    world_raw = await llm_service.get_llm_response(
+        system_prompt=system_prompt,
+        conversation_history=conversation_for_world,
+        temperature=0.35,
+        user_id=current_user.id,
+        timeout=900.0,
+    )
+    world_raw = remove_think_tags(world_raw)
+
+    world_normalized = unwrap_markdown_json(world_raw)
+    world_sanitized = sanitize_json_like_text(world_normalized)
+    try:
+        world_data = json.loads(world_sanitized)
+    except json.JSONDecodeError as exc:  # noqa: BLE001
+        logger.error(
+            "项目 %s 世界观蓝图生成 JSON 解析失败: %s\n原始响应: %s\n标准化后: %s\n清洗后: %s",
+            project_id,
+            exc,
+            world_raw[:500],
+            world_normalized[:500],
+            world_sanitized[:500],
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"世界观蓝图生成失败，AI 返回的内容格式不正确。请重试或联系管理员。错误详情: {str(exc)}",
+        ) from exc
+
+    world_blueprint = Blueprint(**world_data)
+    logger.info("[世界观蓝图][步骤4/4] 解析成功, 准备写入世界观到项目, project_id=%s", project_id)
+    await novel_service.update_world_from_blueprint(project_id, world_blueprint)
+
+    # 更新项目状态为 world_ready
+    project.status = "world_ready"
+    await session.commit()
+    logger.info("项目 %s 世界观蓝图生成完成，状态标记为 world_ready", project_id)
+
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    ai_message = "世界观已生成，可以继续生成角色与人物关系。"
+    return BlueprintGenerationResponse(blueprint=project_schema.blueprint, ai_message=ai_message)
+
+
+@router.post("/{project_id}/blueprint/characters", response_model=BlueprintGenerationResponse)
+async def generate_blueprint_characters(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    mcp_registry: MCPPluginRegistry = Depends(get_mcp_registry),
+) -> BlueprintGenerationResponse:
+    """多步蓝图生成：第二步，基于世界观生成角色与人物关系。"""
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    mcp_tool_service = MCPToolService(session, mcp_registry)
+    llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
+
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    logger.info("[角色蓝图][步骤1/4] 开始生成角色与关系蓝图, project_id=%s", project_id)
+
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    blueprint = project_schema.blueprint
+    if not blueprint or not (blueprint.world_setting or {}).get("core_rules"):
+        logger.warning("项目 %s 尚未生成世界观蓝图，无法生成角色与关系", project_id)
+        raise HTTPException(status_code=400, detail="请先生成世界观蓝图后再生成角色与关系")
+
+    blueprint_dict = blueprint.model_dump()
+    payload = {"blueprint": blueprint_dict}
+
+    system_prompt = _ensure_prompt(
+        await prompt_service.get_prompt("blueprint_characters"),
+        "blueprint_characters",
+    )
+
+    # 使用与世界观/完整蓝图相同的方式，从概念对话中提取可用于生成的历史记录
+    history_records = await novel_service.list_conversations(project_id)
+    if not history_records:
+        logger.warning("项目 %s 缺少对话历史，无法生成角色与关系蓝图", project_id)
+        raise HTTPException(
+            status_code=400,
+            detail="缺少对话历史，请先完成概念对话后再生成角色与关系",
+        )
+
+    formatted_history: List[Dict[str, str]] = []
+    for record in history_records:
+        role = record.role
+        content = record.content
+        if not role or not content:
+            continue
+        try:
+            normalized = unwrap_markdown_json(content)
+            data = json.loads(normalized)
+            if role == "user":
+                user_value = data.get("value", data)
+                if isinstance(user_value, str):
+                    formatted_history.append({"role": "user", "content": user_value})
+            elif role == "assistant":
+                ai_message = data.get("ai_message") if isinstance(data, dict) else None
+                if ai_message:
+                    formatted_history.append({"role": "assistant", "content": ai_message})
+        except (json.JSONDecodeError, AttributeError):
+            continue
+
+    if not formatted_history:
+        logger.warning("项目 %s 对话历史格式异常，无法提取有效内容用于角色与关系生成", project_id)
+        raise HTTPException(
+            status_code=400,
+            detail="无法从历史对话中提取有效内容，请检查对话历史格式或重新进行概念对话",
+        )
+    # 使用 MCP 工具进行资料/规划阶段，为角色与关系设计提供参考说明
+    logger.info("[角色蓝图][步骤2/4] 进入 MCP 规划阶段, 准备检索角色与关系参考资料, project_id=%s", project_id)
+    mcp_reference_text = ""
+    try:
+        planning_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一名资深角色设定与人物关系设计顾问，可以调用外部 MCP 插件检索资料，"
+                    "为后续的角色与人物关系蓝图设计提供真实、系统的参考信息。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "下面是我们之前关于这部小说的概念对话内容，以及当前的世界观蓝图，请先通读这些信息，"
+                    "在需要时调用可用的工具，检索与题材、时代背景、世界观设定、人物原型和关系网络等相关的 1-3 条高价值资料，"
+                    "并整理成供角色与关系设计使用的参考说明，不要直接输出最终角色与关系的 JSON 蓝图。\n\n"
+                    + "\n".join(f"[{item['role']}]: {item['content']}" for item in formatted_history)
+                    + "\n\n[当前世界观蓝图](JSON):\n"
+                    + json.dumps(payload, ensure_ascii=False, indent=2)
+                ),
+            },
+        ]
+        mcp_reference_text = await llm_service.generate_text_with_mcp(
+            messages=planning_messages,
+            user_id=current_user.id,
+            temperature=0.5,
+            timeout=600.0,
+        )
+        mcp_reference_text = mcp_reference_text or ""
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "项目 %s 角色与关系 MCP 规划阶段失败，将在无 MCP 参考资料的情况下生成角色与关系: %s",
+            project_id,
+            exc,
+        )
+        mcp_reference_text = ""
+
+    conversation_for_characters: List[Dict[str, Any]] = list(formatted_history)
+    if mcp_reference_text:
+        conversation_for_characters.append(
+            {
+                "role": "assistant",
+                "content": "[MCP 参考资料]\n" + mcp_reference_text,
+            }
+        )
+    conversation_for_characters.append(
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False),
+        }
+    )
+
+    logger.info("[角色蓝图][步骤3/4] 调用 LLM 生成角色与关系 JSON 蓝图, project_id=%s", project_id)
+
+    response_raw = await llm_service.get_llm_response(
+        system_prompt=system_prompt,
+        conversation_history=conversation_for_characters,
+        temperature=0.7,
+        user_id=current_user.id,
+        timeout=900.0,
+    )
+    response_raw = remove_think_tags(response_raw)
+    response_normalized = unwrap_markdown_json(response_raw)
+    response_sanitized = sanitize_json_like_text(response_normalized)
+
+    try:
+        data = json.loads(response_sanitized)
+    except json.JSONDecodeError as exc:  # noqa: BLE001
+        logger.error(
+            "项目 %s 角色蓝图生成 JSON 解析失败: %s, 原始内容预览: %s",
+            project_id,
+            exc,
+            response_sanitized[:500],
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"角色与关系蓝图生成失败，AI 返回的内容格式不正确: {str(exc)}",
+        ) from exc
+
+    characters: List[Dict[str, Any]]
+    relationships: List[Dict[str, Any]]
+
+    if isinstance(data, list):
+        entities = data
+        characters = entities
+        relationships = []
+
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            name = entity.get("name")
+            if not name:
+                continue
+            rels = entity.get("relationships_array") or []
+            if not isinstance(rels, list):
+                continue
+            for rel in rels:
+                if not isinstance(rel, dict):
+                    continue
+                target_name = rel.get("target_character_name")
+                if not target_name:
+                    continue
+                relationships.append(
+                    {
+                        "character_from": name,
+                        "character_to": target_name,
+                        "relationship_type": rel.get("relationship_type"),
+                        "intimacy_level": rel.get("intimacy_level", 0),
+                        "description": rel.get("description"),
+                    }
+                )
+    elif isinstance(data, dict):
+        characters = data.get("characters") or []
+        relationships = data.get("relationships") or []
+    else:
+        logger.error(
+            "项目 %s 角色蓝图生成返回了不支持的 JSON 类型: %s",
+            project_id,
+            type(data).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="角色与关系蓝图生成失败，AI 返回的 JSON 结构不正确，请联系管理员。",
+        )
+
+    patch: Dict[str, Any] = {
+        "characters": characters,
+        "relationships": relationships,
+    }
+    logger.info("[角色蓝图][步骤4/4] 解析成功, 准备写入角色与关系到蓝图, project_id=%s", project_id)
+    await novel_service.patch_blueprint(project_id, patch)
+
+    # 更新项目状态为 characters_ready
+    project.status = "characters_ready"
+    await session.commit()
+    logger.info("项目 %s 角色与关系蓝图生成完成，状态标记为 characters_ready", project_id)
+
+    updated_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    ai_message = "角色与人物关系已生成，可以继续生成章节大纲。"
+    return BlueprintGenerationResponse(blueprint=updated_schema.blueprint, ai_message=ai_message)
+
+
 @router.post("/{project_id}/blueprint/generate", response_model=BlueprintGenerationResponse)
 async def generate_blueprint(
     project_id: str,
@@ -222,8 +599,9 @@ async def generate_blueprint(
     llm_service = LLMService(session, mcp_tool_service=mcp_tool_service)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
-    logger.info("项目 %s 开始生成蓝图", project_id)
+    logger.info("[完整蓝图][步骤1/4] 开始生成完整小说蓝图, project_id=%s", project_id)
 
+    # 统一整理概念对话历史，供后续各阶段复用
     history_records = await novel_service.list_conversations(project_id)
     if not history_records:
         logger.warning("项目 %s 缺少对话历史，无法生成蓝图", project_id)
@@ -253,12 +631,72 @@ async def generate_blueprint(
         logger.warning("项目 %s 对话历史格式异常，无法提取有效内容", project_id)
         raise HTTPException(
             status_code=400,
-            detail="无法从历史对话中提取有效内容，请检查对话历史格式或重新进行概念对话"
+            detail="无法从历史对话中提取有效内容，请检查对话历史格式或重新进行概念对话",
         )
 
-    # 第一阶段：使用 MCP 工具进行资料/规划阶段
+    # 子步骤 A：先生成世界观蓝图
+    try:
+        logger.info("[完整蓝图][步骤1/4] 子步骤A：调用世界观蓝图流水线, project_id=%s", project_id)
+        await generate_blueprint_world(
+            project_id=project_id,
+            session=session,
+            current_user=current_user,
+            mcp_registry=mcp_registry,
+        )
+    except HTTPException:
+        # 直接向前端透传 HTTP 异常
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "项目 %s 在完整蓝图子步骤A（世界观蓝图）阶段失败，终止完整蓝图生成: %s",
+            project_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="世界观蓝图生成失败，无法继续生成完整蓝图，请稍后重试或联系管理员。",
+        ) from exc
+
+    # 子步骤 B：基于世界观生成角色与关系蓝图
+    try:
+        logger.info("[完整蓝图][步骤1/4] 子步骤B：调用角色与关系蓝图流水线, project_id=%s", project_id)
+        await generate_blueprint_characters(
+            project_id=project_id,
+            session=session,
+            current_user=current_user,
+            mcp_registry=mcp_registry,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "项目 %s 在完整蓝图子步骤B（角色与关系蓝图）阶段失败，终止完整蓝图生成: %s",
+            project_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="角色与关系蓝图生成失败，无法继续生成完整蓝图，请稍后重试或联系管理员。",
+        ) from exc
+
+    # 重新读取当前项目蓝图（此时已包含世界观与角色/关系），用于第三阶段作为上下文
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    current_blueprint = project_schema.blueprint
+    if current_blueprint is None:
+        raise HTTPException(
+            status_code=500,
+            detail="蓝图生成失败，未能获取项目蓝图，请稍后重试或联系管理员。",
+        )
+
+    # 此处不再提前将项目标记为 blueprint_ready，蓝图完成由第三步「生成章节大纲」决定
+    await session.commit()
+    ai_message = "世界观与角色蓝图已生成，下一步请使用章节大纲生成功能完成蓝图。"
+    return BlueprintGenerationResponse(blueprint=current_blueprint, ai_message=ai_message)
+
+    # 第二阶段：使用 MCP 工具进行资料/规划阶段，为「完整蓝图（含章节大纲）」收集参考资料
     mcp_reference_text = ""
     try:
+        logger.info("[完整蓝图][步骤2/4] 进入 MCP 规划阶段, 准备检索蓝图设计参考资料, project_id=%s", project_id)
         planning_messages = [
             {
                 "role": "system",
@@ -286,7 +724,7 @@ async def generate_blueprint(
         mcp_reference_text = mcp_reference_text or ""
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "项目 %s 蓝图 MCP 规划阶段失败，将在无 MCP 参考资料的情况下生成蓝图: %s",
             project_id,
@@ -294,17 +732,32 @@ async def generate_blueprint(
         )
         mcp_reference_text = ""
 
-    # 第二阶段：在 screenwriting 提示 + 对话历史基础上（可选地）附加 MCP 参考资料，生成最终蓝图
+    # 第三阶段：在 screenwriting 提示 + 对话历史基础上（可选地）附加 MCP 参考资料和当前蓝图 JSON，生成最终蓝图（含章节大纲）
+    logger.info("[完整蓝图][步骤3/4] 调用 LLM 生成完整 JSON 蓝图, project_id=%s", project_id)
     system_prompt = _ensure_prompt(await prompt_service.get_prompt("screenwriting"), "screenwriting")
+    # 追加说明：当提供 blueprint JSON 时，要求模型优先遵守其中既有的世界观与角色设定
+    system_prompt = (
+        f"{system_prompt}\n\n"
+        "补充说明：如果对话中额外提供了名为 `blueprint` 的 JSON 对象，"
+        "你应在不违背该对象中已确定的世界观与角色设定的前提下，"
+        "主要补全或细化章节大纲等结构内容；仅在确有必要时对既有设定做小幅调整，并保持前后一致。"
+    )
 
     conversation_for_blueprint = list(formatted_history)
     if mcp_reference_text:
         conversation_for_blueprint.append(
             {
                 "role": "assistant",
-                "content": (
-                    "[MCP 参考资料]\n" + mcp_reference_text
-                ),
+                "content": "[MCP 参考资料]\n" + mcp_reference_text,
+            }
+        )
+
+    # 将当前蓝图作为结构化 JSON 上下文追加到对话中
+    if blueprint_context:
+        conversation_for_blueprint.append(
+            {
+                "role": "user",
+                "content": json.dumps({"blueprint": blueprint_context}, ensure_ascii=False),
             }
         )
 
@@ -321,7 +774,7 @@ async def generate_blueprint(
     blueprint_sanitized = sanitize_json_like_text(blueprint_normalized)
     try:
         blueprint_data = json.loads(blueprint_sanitized)
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError as exc:  # noqa: BLE001
         logger.error(
             "项目 %s 蓝图生成 JSON 解析失败: %s\n原始响应: %s\n标准化后: %s\n清洗后: %s",
             project_id,
@@ -332,18 +785,33 @@ async def generate_blueprint(
         )
         raise HTTPException(
             status_code=500,
-            detail=f"蓝图生成失败，AI 返回的内容格式不正确。请重试或联系管理员。错误详情: {str(exc)}"
+            detail=f"蓝图生成失败，AI 返回的内容格式不正确。请重试或联系管理员。错误详情: {str(exc)}",
         ) from exc
 
     blueprint = Blueprint(**blueprint_data)
-    await novel_service.replace_blueprint(project_id, blueprint)
+    logger.info(
+        "[完整蓝图][步骤4/4] 解析成功, 准备合并世界观/概述并更新章节大纲, project_id=%s",
+        project_id,
+    )
+
+    # 先仅根据完整蓝图更新世界观与概述等元信息，不改动角色、关系和章节大纲
+    await novel_service.update_world_from_blueprint(project_id, blueprint)
+
+    # 再单独使用 patch_blueprint 更新章节大纲，避免覆盖已有角色与关系
+    patch: Dict[str, Any] = {}
+    if blueprint.chapter_outline:
+        patch["chapter_outline"] = [item.model_dump() for item in blueprint.chapter_outline]
+    if patch:
+        await novel_service.patch_blueprint(project_id, patch)
+
+    # 同步项目标题与状态，由路由层控制
     if blueprint.title:
         project.title = blueprint.title
-        project.status = "blueprint_ready"
-        await session.commit()
-        logger.info("项目 %s 更新标题为 %s，并标记为 blueprint_ready", project_id, blueprint.title)
+    project.status = "blueprint_ready"
+    await session.commit()
+    logger.info("项目 %s 标记为 blueprint_ready，当前标题为 %s", project_id, project.title)
 
-    # 第三阶段：根据章节大纲自动拆分章节规划并创建章节记录
+    # 终阶段：根据章节大纲自动拆分章节规划并创建章节记录
     # 这一阶段属于增强体验逻辑，失败时不会影响蓝图生成结果
     auto_expand_enabled = False
     try:
@@ -379,9 +847,7 @@ async def generate_blueprint(
                 exc,
             )
 
-    ai_message = (
-        "太棒了！我已经根据我们的对话整理出完整的小说蓝图。"
-    )
+    ai_message = "太棒了！我已经根据我们的对话整理出完整的小说蓝图。"
     return BlueprintGenerationResponse(blueprint=blueprint, ai_message=ai_message)
 
 

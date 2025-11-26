@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS blueprint_relationships (
     project_id CHAR(36) NOT NULL,
     character_from VARCHAR(255) NOT NULL,
     character_to VARCHAR(255) NOT NULL,
+    relationship_type VARCHAR(100) NULL,
+    intimacy_level INT DEFAULT 0,
     description TEXT NULL,
     position INT DEFAULT 0,
     CONSTRAINT fk_relationships_project FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
@@ -81,6 +83,7 @@ CREATE TABLE IF NOT EXISTS chapter_outlines (
     chapter_number INT NOT NULL,
     title VARCHAR(255) NOT NULL,
     summary TEXT NULL,
+    extra JSON NULL,
     CONSTRAINT fk_outlines_project FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
     UNIQUE KEY uq_outline_project_chapter (project_id, chapter_number)
 );

@@ -68,6 +68,33 @@ export interface Blueprint {
   chapter_outline?: ChapterOutline[]
 }
 
+export interface OrganizationMemberInfo {
+  id: number
+  character_id: number
+  character_name: string
+  position: string
+  rank: number
+  loyalty: number
+  status: string
+  joined_at?: string | null
+  left_at?: string | null
+  notes?: string | null
+}
+
+export interface OrganizationDetail {
+  id: number
+  name: string
+  power_level: number
+  member_count: number
+  location?: string | null
+  motto?: string | null
+  color?: string | null
+  level: number
+  parent_org_id?: number | null
+  character_id?: number | null
+  members: OrganizationMemberInfo[]
+}
+
 export interface Character {
   name: string
   description: string
@@ -229,6 +256,10 @@ export class NovelAPI {
 
   static async getSection(projectId: string, section: NovelSectionType): Promise<NovelSectionResponse> {
     return request(`${NOVELS_BASE}/${projectId}/sections/${section}`)
+  }
+
+  static async getOrganizations(projectId: string): Promise<OrganizationDetail[]> {
+    return request(`${NOVELS_BASE}/${projectId}/organizations`)
   }
 
   static async converseConcept(

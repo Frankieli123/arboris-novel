@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError
 
 from ..core.config import settings
+from ..mcp import UniversalMCPAdapter
 from ..repositories.llm_config_repository import LLMConfigRepository
 from ..repositories.system_config_repository import SystemConfigRepository
 from ..repositories.user_repository import UserRepository
@@ -29,7 +30,12 @@ except ImportError:  # pragma: no cover - Ollama 为可选依赖
 class LLMService:
     """封装与大模型交互的所有逻辑，包括配额控制与配置选择。"""
 
-    def __init__(self, session, mcp_tool_service: Optional["MCPToolService"] = None):
+    def __init__(
+        self,
+        session,
+        mcp_tool_service: Optional["MCPToolService"] = None,
+        enable_mcp_adapter: bool = True,
+    ):
         self.session = session
         self.llm_repo = LLMConfigRepository(session)
         self.system_config_repo = SystemConfigRepository(session)
@@ -38,6 +44,12 @@ class LLMService:
         self.usage_service = UsageService(session)
         self._embedding_dimensions: Dict[str, int] = {}
         self.mcp_tool_service = mcp_tool_service
+        self.enable_mcp_adapter = enable_mcp_adapter
+        self.mcp_adapter: Optional[UniversalMCPAdapter]
+        if enable_mcp_adapter:
+            self.mcp_adapter = UniversalMCPAdapter()
+        else:
+            self.mcp_adapter = None
 
     async def get_llm_response(
         self,
@@ -97,7 +109,7 @@ class LLMService:
         finish_reason = None
 
         logger.info(
-            "Streaming LLM response: model=%s user_id=%s messages=%d",
+            "开始流式生成 LLM 响应: 模型=%s 用户=%s 消息数=%d",
             config.get("model"),
             user_id,
             len(messages),
@@ -128,7 +140,7 @@ class LLMService:
             else:
                 detail = str(exc) or detail
             logger.error(
-                "LLM stream internal error: model=%s user_id=%s detail=%s",
+                "LLM 流式调用内部错误: 模型=%s 用户=%s 详情=%s",
                 config.get("model"),
                 user_id,
                 detail,
@@ -143,7 +155,7 @@ class LLMService:
             else:
                 detail = "无法连接到 AI 服务，请稍后重试"
             logger.error(
-                "LLM stream failed: model=%s user_id=%s detail=%s",
+                "LLM 流式调用失败: 模型=%s 用户=%s 详情=%s",
                 config.get("model"),
                 user_id,
                 detail,
@@ -152,7 +164,7 @@ class LLMService:
             raise HTTPException(status_code=503, detail=detail) from exc
 
         logger.debug(
-            "LLM response collected: model=%s user_id=%s finish_reason=%s preview=%s",
+            "LLM 响应收集完成: 模型=%s 用户=%s 结束原因=%s 响应预览=%s",
             config.get("model"),
             user_id,
             finish_reason,
@@ -161,7 +173,7 @@ class LLMService:
 
         if finish_reason == "length":
             logger.warning(
-                "LLM response truncated: model=%s user_id=%s response_length=%d",
+                "LLM 响应因长度被截断: 模型=%s 用户=%s 响应长度=%d",
                 config.get("model"),
                 user_id,
                 len(full_response),
@@ -173,7 +185,7 @@ class LLMService:
 
         if not full_response:
             logger.error(
-                "LLM returned empty response: model=%s user_id=%s finish_reason=%s",
+                "LLM 返回空响应: 模型=%s 用户=%s 结束原因=%s",
                 config.get("model"),
                 user_id,
                 finish_reason,
@@ -185,7 +197,7 @@ class LLMService:
 
         await self.usage_service.increment("api_request_count")
         logger.info(
-            "LLM response success: model=%s user_id=%s chars=%d",
+            "LLM 响应成功: 模型=%s 用户=%s 字符数=%d",
             config.get("model"),
             user_id,
             len(full_response),
@@ -456,7 +468,7 @@ class LLMService:
         try:
             response = await self._call_llm_with_tools(
                 messages,
-                tools,
+                tools=tools,
                 temperature=temperature,
                 user_id=user_id,
                 timeout=timeout
@@ -593,61 +605,148 @@ class LLMService:
             包含 content 和可选 tool_calls 的响应字典
         """
         config = await self._resolve_llm_config(user_id)
-        
+
         # 使用 OpenAI 客户端进行非流式调用（工具调用需要完整响应）
         client = AsyncOpenAI(
             api_key=config["api_key"],
-            base_url=config.get("base_url")
+            base_url=config.get("base_url"),
         )
-        
-        # 构建请求参数
-        request_params = {
-            "model": config.get("model") or "gpt-3.5-turbo",
-            "messages": messages,
-            "temperature": temperature,
-            "timeout": timeout
-        }
-        
-        # 只在提供工具时添加 tools 和 tool_choice 参数
-        if tools:
-            request_params["tools"] = tools
-            if tool_choice:
-                request_params["tool_choice"] = tool_choice
-        
-        try:
-            response = await client.chat.completions.create(**request_params)
-            
-            choice = response.choices[0]
-            message = choice.message
-            
-            result = {
-                "content": message.content or "",
-                "finish_reason": choice.finish_reason
+
+        # 定义底层调用封装，供通用适配器或直接调用使用
+        async def call_api(
+            *,
+            message: str,
+            tools_param: Optional[List[Dict[str, Any]]],
+            tool_choice_param: Optional[str],
+        ) -> Any:
+            # 将最后一条用户消息替换为给定 message，用于提示词注入场景
+            updated_messages: List[Dict[str, Any]] = []
+            if messages:
+                updated_messages = messages[:-1]
+                last = messages[-1].copy()
+                if last.get("role") == "user":
+                    last["content"] = message
+                updated_messages.append(last)
+            else:
+                updated_messages = [{"role": "user", "content": message}]
+
+            request_params = {
+                "model": config.get("model") or "gpt-3.5-turbo",
+                "messages": updated_messages,
+                "temperature": temperature,
+                "timeout": timeout,
             }
-            
-            # 如果有工具调用，添加到结果中
-            if message.tool_calls:
+            if tools_param:
+                request_params["tools"] = tools_param
+                if tool_choice_param:
+                    request_params["tool_choice"] = tool_choice_param
+
+            resp = await client.chat.completions.create(**request_params)
+            return resp
+
+        async def test_fc() -> Any:
+            """测试当前 API 是否支持 Function Calling。"""
+            test_tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "test_function",
+                        "description": "测试函数",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+            try:
+                return await call_api(
+                    message="测试 Function Calling 支持",
+                    tools_param=test_tools,
+                    tool_choice_param="none",
+                )
+            except Exception as exc:  # pragma: no cover - 能力检测失败时的调试信息
+                logger.debug("Function Calling 测试失败: %s", exc)
+                raise
+
+        # 优先尝试使用通用适配器（自动检测 + 降级），仅在提供 tools 时启用
+        if self.enable_mcp_adapter and self.mcp_adapter and tools:
+            try:
+                api_identifier = f"{config.get('base_url') or 'openai'}::" f"{config.get('model') or ''}"
+
+                last_user_message = ""
+                for msg in reversed(messages):
+                    if msg.get("role") == "user":
+                        last_user_message = msg.get("content", "")
+                        break
+
+                adapter_result = await self.mcp_adapter.call_with_fallback(
+                    api_identifier=api_identifier,
+                    tools=tools,
+                    user_message=last_user_message,
+                    call_function=call_api,
+                    test_function=test_fc,
+                )
+
+                if adapter_result.has_tool_calls:
+                    return {
+                        "tool_calls": adapter_result.tool_calls,
+                        "content": adapter_result.raw_response,
+                        "finish_reason": "tool_calls",
+                    }
+                return {
+                    "content": adapter_result.raw_response,
+                    "finish_reason": "stop",
+                }
+
+            except Exception as exc:
+                logger.error(
+                    "MCP 通用适配器调用失败，降级为原始工具调用: %s",
+                    str(exc),
+                )
+
+        # 原始实现（无适配器或降级失败）
+        try:
+            request_params = {
+                "model": config.get("model") or "gpt-3.5-turbo",
+                "messages": messages,
+                "temperature": temperature,
+                "timeout": timeout,
+            }
+            if tools:
+                request_params["tools"] = tools
+                if tool_choice:
+                    request_params["tool_choice"] = tool_choice
+
+            response = await client.chat.completions.create(**request_params)
+
+            choice = response.choices[0]
+            message_obj = choice.message
+
+            result = {
+                "content": message_obj.content or "",
+                "finish_reason": choice.finish_reason,
+            }
+
+            if message_obj.tool_calls:
                 result["tool_calls"] = [
                     {
                         "id": tc.id,
                         "type": tc.type,
                         "function": {
                             "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
+                            "arguments": tc.function.arguments,
+                        },
                     }
-                    for tc in message.tool_calls
+                    for tc in message_obj.tool_calls
                 ]
-            
+
             logger.debug(
                 "LLM 工具调用响应: model=%s user_id=%s tool_calls=%d",
                 config.get("model"),
                 user_id,
-                len(result.get("tool_calls", []))
+                len(result.get("tool_calls", [])),
             )
-            
+
             return result
-            
+
         except InternalServerError as exc:
             detail = "AI 服务内部错误，请稍后重试"
             response_obj = getattr(exc, "response", None)
