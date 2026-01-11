@@ -264,8 +264,14 @@ const fetchData = async () => {
     })
     
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
-      throw new Error(errorData.detail || '获取伏笔数据失败')
+      let errorMessage = '获取伏笔数据失败'
+      try {
+        const errorData = await response.json()
+        errorMessage = errorData.detail || errorData.message || JSON.stringify(errorData)
+      } catch (e) {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`
+      }
+      throw new Error(errorMessage)
     }
     
     const data: ForeshadowingResponse = await response.json()
