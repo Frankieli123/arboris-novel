@@ -341,10 +341,10 @@ export class OptimizerAPI {
   /**
    * 对章节内容进行分层优化
    */
-  static async optimizeChapter(request: OptimizeRequest): Promise<OptimizeResponse> {
+  static async optimizeChapter(optimizeReq: OptimizeRequest): Promise<OptimizeResponse> {
     return request(`${OPTIMIZER_BASE}/optimize`, {
       method: 'POST',
-      body: JSON.stringify(request)
+      body: JSON.stringify(optimizeReq)
     })
   }
 
