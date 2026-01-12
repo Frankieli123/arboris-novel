@@ -76,6 +76,7 @@ def _clean_string(text: str, parse_json: bool = True) -> str:
 
 from fastapi import HTTPException, status
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -388,6 +389,7 @@ class NovelService:
     async def get_or_create_chapter(self, project_id: str, chapter_number: int) -> Chapter:
         stmt = (
             select(Chapter)
+            .options(selectinload(Chapter.selected_version))
             .where(
                 Chapter.project_id == project_id,
                 Chapter.chapter_number == chapter_number,

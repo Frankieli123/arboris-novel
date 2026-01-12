@@ -516,7 +516,19 @@ async def edit_chapter_content(
     await session.commit()
     
     # 异步触发向量化入库
-    ingest_service = ChapterIngestionService(session)
-    await ingest_service.ingest_chapter(project_id, request.chapter_number, request.content)
+    try:
+        llm_service = LLMService(session)
+        ingest_service = ChapterIngestionService(llm_service=llm_service)
+        await ingest_service.ingest_chapter(
+            project_id=project_id,
+            chapter_number=request.chapter_number,
+            title=chapter.title or f"第{request.chapter_number}章",
+            content=request.content,
+            summary=None
+        )
+        logger.info(f"章节 {request.chapter_number} 向量化入库成功")
+    except Exception as e:
+        logger.error(f"章节 {request.chapter_number} 向量化入库失败: {e}")
+        # 向量化失败不应阻止内容编辑，仅记录错误
     
     return await _load_project_schema(novel_service, project_id, current_user.id)
