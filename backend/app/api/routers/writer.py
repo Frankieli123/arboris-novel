@@ -303,14 +303,15 @@ async def select_chapter_version(
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number)
 
-    if not chapter.versions or request.version_index >= len(chapter.versions):
-        raise HTTPException(status_code=404, detail="指定的章节版本不存在")
-
-    selected_version = chapter.versions[request.version_index]
-    chapter.selected_version_id = selected_version.id
-    chapter.content = selected_version.content
-    chapter.status = "selecting"
-    await session.commit()
+    # 使用 novel_service.select_chapter_version 确保排序一致
+    # 该函数会按 created_at 排序并校验索引
+    selected_version = await novel_service.select_chapter_version(chapter, request.version_index)
+    
+    # 校验内容是否为空
+    if not selected_version.content or len(selected_version.content.strip()) == 0:
+        # 回滚状态，不标记为 successful
+        await session.rollback()
+        raise HTTPException(status_code=400, detail="选中的版本内容为空，无法确认为最终版")
 
     # 异步触发向量化入库
     try:
@@ -327,9 +328,6 @@ async def select_chapter_version(
     except Exception as e:
         logger.error(f"章节 {request.chapter_number} 向量化入库失败: {e}")
         # 向量化失败不应阻止版本选择，仅记录错误
-
-    chapter.status = "successful"
-    await session.commit()
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 

@@ -433,6 +433,11 @@ class NovelService:
         if not versions or version_index < 0 or version_index >= len(versions):
             raise HTTPException(status_code=400, detail="版本索引无效")
         selected = versions[version_index]
+        
+        # 校验内容是否为空
+        if not selected.content or len(selected.content.strip()) == 0:
+            raise HTTPException(status_code=400, detail="选中的版本内容为空，无法确认为最终版")
+        
         chapter.selected_version_id = selected.id
         chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
         chapter.word_count = len(selected.content or "")
